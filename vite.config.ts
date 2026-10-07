@@ -3,69 +3,14 @@ import { defineConfig, loadEnv } from "vite";
 import type { Plugin } from "vite";
 import fs from "node:fs";
 import path from "node:path";
+// Serves authenticated commands, bounded catalogues, and private image tickets.
+import { createWorkflowMiddleware } from './server/hmg/gateway.mjs';
+import { redactSensitive } from './src/utils/redaction';
+import { privateSafePublicAssets } from './scripts/hmg/private-safe-public-assets';
 
 const CLIENT_LOG_ENDPOINT = "/__client_log";
 const CLIENT_LOG_FILE = path.resolve(process.cwd(), "logs/frontend.ndjson");
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
-
-const REDACT_KEYS = new Set([
-  "token",
-  "access_token",
-  "refresh_token",
-  "id_token",
-  "authorization",
-  "auth",
-  "password",
-  "passwd",
-  "pwd",
-  "api_key",
-  "apikey",
-  "secret",
-  "client_secret",
-  "cookie",
-  "set-cookie",
-  "session",
-  "sessionid",
-]);
-
-const redactSensitive = (value: unknown, seen = new WeakSet<object>()): unknown => {
-  if (Array.isArray(value)) {
-    return value.map((item) => redactSensitive(item, seen));
-  }
-  if (value && typeof value === "object") {
-    if (seen.has(value as object)) return "[Circular]";
-    seen.add(value as object);
-    const input = value as Record<string, unknown>;
-    const output: Record<string, unknown> = {};
-    for (const [key, keyValue] of Object.entries(input)) {
-      if (REDACT_KEYS.has(key.toLowerCase())) {
-        output[key] = "[REDACTED]";
-      } else if (key.toLowerCase() === "url" && typeof keyValue === "string") {
-        output[key] = redactUrl(keyValue);
-      } else {
-        output[key] = redactSensitive(keyValue, seen);
-      }
-    }
-    return output;
-  }
-  return value;
-};
-
-const redactUrl = (url: string): string => {
-  try {
-    const parsed = new URL(url, "http://localhost");
-    let touched = false;
-    parsed.searchParams.forEach((_, key) => {
-      if (REDACT_KEYS.has(key.toLowerCase())) {
-        parsed.searchParams.set(key, "[REDACTED]");
-        touched = true;
-      }
-    });
-    return touched ? parsed.toString() : url;
-  } catch {
-    return url;
-  }
-};
 
 const createClientLogPlugin = (): Plugin => ({
   name: "taruvi:client-log",
@@ -176,13 +121,24 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
 
   return {
+    // Only explicitly defined public constants may reach browser code.
+    envPrefix: [],
     define: {
+      'import.meta.env.VITE_ENABLE_CLIENT_LOGGER': JSON.stringify(env.VITE_ENABLE_CLIENT_LOGGER === 'true' ? 'true' : 'false'),
       __TARUVI_SITE_URL__: JSON.stringify(env.TARUVI_SITE_URL ?? ""),
       __TARUVI_APP_SLUG__: JSON.stringify(env.TARUVI_APP_SLUG ?? ""),
-      __TARUVI_API_KEY__: JSON.stringify(env.TARUVI_API_KEY ?? ""),
       __TARUVI_APP_TITLE__: JSON.stringify(env.TARUVI_APP_TITLE ?? ""),
     },
-    plugins: [react(), createClientLogPlugin()],
+    plugins: [react(), privateSafePublicAssets(), createClientLogPlugin(), {
+      name: 'hmg:workflow-gateway',
+      configureServer(server) {
+        server.middlewares.use(createWorkflowMiddleware({
+          siteUrl: env.TARUVI_SITE_URL, appSlug: env.TARUVI_APP_SLUG,
+          apiKey: env['TARUVI_API_KEY'], allowedOrigin: env.HMG_ALLOWED_ORIGIN,
+          development: true,
+        }));
+      },
+    }],
     optimizeDeps: {
       include: [
         "@emotion/react",

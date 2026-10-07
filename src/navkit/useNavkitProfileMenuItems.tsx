@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { ProfileMenuItem } from "@taruvi/navkit";
+import type { ProfileMenuItem } from "@taruvi/navkit/src/types";
 
 // import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 

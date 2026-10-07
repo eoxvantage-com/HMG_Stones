@@ -1,0 +1,27 @@
+import {useEffect,useState} from 'react';
+import {Link as RouterLink,useSearchParams} from 'react-router';
+import {Box,Button,Chip,MenuItem,Stack,Table,TableBody,TableCell,TableContainer,TableHead,TablePagination,TableRow,TextField,Typography} from '@mui/material';
+import {PageContainer} from '../../components';
+import {useWorkflow} from '../../features/hmg/api';
+import {useWorkspace} from '../../features/hmg/components/AppShell';
+import {EmptyState,LoadError,LoadingState,PageHeading,Panel} from '../../features/hmg/components/common';
+import type {HmgDesignDashboard} from '../../features/hmg/types';
+const filters={all:'All projects',design:'With saved designs',summary:'With prepared summaries',quote:'With quotes'};
+const date=(value:string)=>Number.isFinite(Date.parse(value))?new Intl.DateTimeFormat('en-US',{month:'short',day:'2-digit',year:'numeric'}).format(new Date(value)):'Not recorded';
+export function DesignDashboard(){
+ const context=useWorkspace();const [params,setParams]=useSearchParams();const search=params.get('q')||'';const rawStatus=params.get('status')||'all';const status=Object.hasOwn(filters,rawStatus)?rawStatus as keyof typeof filters:'all';const rawPage=Number(params.get('page')||1);const page=Number.isSafeInteger(rawPage)&&rawPage>0?Math.min(rawPage,10000):1;const rawSize=Number(params.get('size'));const pageSize=[10,20,50].includes(rawSize)?rawSize:10;const [input,setInput]=useState(search);
+ const change=(key:string,value:string)=>setParams(old=>{const next=new URLSearchParams(old);value?next.set(key,value):next.delete(key);if(key!=='page')next.delete('page');return next;});
+ useEffect(()=>setInput(search),[search]);useEffect(()=>{if(input===search)return;const timer=setTimeout(()=>change('q',input),350);return()=>clearTimeout(timer);},[input,search]);
+ const query=useWorkflow<HmgDesignDashboard>('getDesignDashboard',undefined,{search,status,page,pageSize});
+ return <PageContainer><PageHeading title="Design Dashboard" description="Live progress across your authorized projects, saved room designs, review summaries and quotes."/>
+ <Stack spacing={3}>
+ <Stack direction={{xs:'column',sm:'row'}} spacing={2}><TextField label="Search projects" value={input} onChange={e=>setInput(e.target.value)} fullWidth inputProps={{maxLength:100}}/><TextField select label="Design progress" value={status} onChange={e=>change('status',e.target.value)} fullWidth>{Object.entries(filters).map(([id,label])=><MenuItem key={id} value={id}>{label}</MenuItem>)}</TextField></Stack>
+ {(search||status!=='all')&&<Stack direction="row" flexWrap="wrap" gap={1}>{search&&<Chip label={`Search: ${search}`} onDelete={()=>change('q','')}/>} {status!=='all'&&<Chip label={filters[status]} onDelete={()=>change('status','')}/>}<Button onClick={()=>{setInput('');setParams({});}}>Clear filters</Button></Stack>}
+ {query.loading?<LoadingState/>:query.error||!query.data?<LoadError retry={()=>query.refetch()}/>:<>
+ <Box sx={{display:'grid',gridTemplateColumns:{xs:'1fr',sm:'repeat(2,1fr)',lg:'repeat(4,1fr)'},gap:2}}>{(['projects','designs','summaries','quotes'] as const).map(key=><Panel key={key} title={{projects:'Projects',designs:'Saved designs',summaries:'Prepared summaries',quotes:'Quote series'}[key]}><Typography variant="h2">{query.data!.counts[key]}</Typography></Panel>)}</Box>
+ <Typography variant="caption">Counts reflect your authorized projects and search; the progress filter applies to the list below. No price, order or availability is implied.</Typography>
+ {!query.data.total?<EmptyState title={search?'No results found':status!=='all'?'No matching items':'No designs yet'} description={search||status!=='all'?'Try another search or progress filter.':'Open a project in 3D Stone Studio to save your first room design.'} action={<Button component={RouterLink} to="/studio-3d">Open 3D Stone Studio</Button>}/>:<Panel title="Design progress"><TableContainer><Table aria-label="Design progress"><TableHead><TableRow><TableCell>Project</TableCell><TableCell align="right">Designs</TableCell><TableCell align="right">Summaries</TableCell><TableCell>Quote</TableCell><TableCell>Updated</TableCell><TableCell align="right">Actions</TableCell></TableRow></TableHead><TableBody>{query.data.data.map(row=><TableRow key={row.projectId}><TableCell>{row.projectName}</TableCell><TableCell align="right">{row.designCount}</TableCell><TableCell align="right">{row.summaryCount}</TableCell><TableCell>{row.hasQuote?row.quoteStatus||'Created':'Not started'}</TableCell><TableCell>{date(row.updatedAt)}</TableCell><TableCell align="right"><Stack direction="row" justifyContent="flex-end" flexWrap="wrap" gap={1}><Button component={RouterLink} to={`/studio-3d?projectId=${encodeURIComponent(row.projectId)}`}>Open studio</Button><Button component={RouterLink} to={`/projects/${encodeURIComponent(row.projectId)}`}>Project</Button>{context?.canPrice&&<Button component={RouterLink} to={row.hasQuote?`/quotes/${encodeURIComponent(row.projectId)}`:'/quotes'}>Quote Desk</Button>}</Stack></TableCell></TableRow>)}</TableBody></Table></TableContainer></Panel>}
+ <TablePagination component="div" count={query.data.total} page={page-1} rowsPerPage={pageSize} rowsPerPageOptions={[10,20,50]} onPageChange={(_,p)=>change('page',String(p+1))} onRowsPerPageChange={e=>change('size',e.target.value)} sx={{'.MuiTablePagination-toolbar':{flexWrap:'wrap'}}}/>
+ </>}
+ </Stack></PageContainer>;
+}

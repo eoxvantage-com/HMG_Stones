@@ -15,7 +15,7 @@ dist-ssr
 
 # Editor directories and files
 
-package-lock.json
+.codestudio/
 .vscode/_
 !.vscode/extensions.json
 .idea
@@ -36,3 +36,36 @@ auth.json
 
 # Codespace setup marker (runtime state, not source)
 .codespace/.setup-complete
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local-only development and release artifacts (not part of the shared app).
+.env*
+dist.zip
+*.zip
+.worktrees/
+.agent/
+.agents/
+.codex/
+.cursor/
+.kiro/
+.codespace/
+.devcontainer/
+.vscode/
+docs/
+AGENTS.md
+CLAUDE.md
+UI_Guidelines.md
+PROVIDER_FORK_GUIDE.md
+tests/
+**/tests/
+**/*.test.*
+**/*.spec.*
+vitest.config.ts
+src/pages/public/test-upload/
+backend/hmg/*.json
+!backend/hmg/schema.json
+public/hmg-gallery/
+public/hmg-materials/

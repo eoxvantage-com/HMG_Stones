@@ -14,7 +14,7 @@ import { Container, ContainerProps } from "@mui/material";
  * rare page that genuinely wants a centered, width-limited column.
  */
 export const PageContainer = ({ children, sx, maxWidth = false, ...rest }: ContainerProps) => (
-  <Container maxWidth={maxWidth} sx={{ py: 3, px: 3, ...sx }} {...rest}>
+  <Container maxWidth={maxWidth} sx={{ maxWidth: '1440px', py: { xs: 2, md: 4 }, px: { xs: 2, md: 4 }, ...sx }} {...rest}>
     {children}
   </Container>
 );

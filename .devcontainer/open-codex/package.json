@@ -1,9 +1,0 @@
-{
-  "name": "open-codex",
-  "publisher": "taruvi",
-  "displayName": "Open Codex on Startup",
-  "version": "0.0.1",
-  "engines": { "vscode": "^1.70.0" },
-  "activationEvents": ["onStartupFinished"],
-  "main": "./extension.js"
-}

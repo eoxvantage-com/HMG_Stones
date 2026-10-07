@@ -1,83 +1,39 @@
-# Taruvi Hackathon Template (Refine v5)
+# HMG Stones
 
-This repository is the official starter template for Taruvi hackathons.
+React 18, TypeScript, Refine v5 and MUI application for stone selection, room design and sales workflows, using Taruvi authentication, data, functions and private storage.
 
-It includes:
-- A Refine v5 + React app scaffold
-- Navkit top navigation with a customizable profile menu hook (`src/navkit/useNavkitProfileMenuItems.tsx`)
-- GitHub Codespaces-ready devcontainer setup
-- Guided Codex startup flow for required Taruvi environment variables
-- MCP configuration for Taruvi + helpful developer tools
+## Local setup
 
-## Who This Is For
+1. Install dependencies with `npm ci` (Node.js 22 recommended).
+2. Create an untracked `.env.local` with public configuration:
 
-- **Participants**: use this template to start building quickly in Codespaces.
-- **Organizers/Mentors**: use this for standardized onboarding across teams.
-
-## Hackathon Flow
-
-### Organizer-side (Advanced setup)
-1. Sign up for GitHub Codespaces in Advanced.
-2. Create sites for each group based on color coding in Advanced.
-3. Ensure participants accept their Taruvi Console invite.
-
-### Participant-side setup
-0. In Taruvi Console, create your app and collect:
-   - `TARUVI_SITE_URL` (site URL)
-   - `TARUVI_API_KEY`
-   - `TARUVI_APP_SLUG`
-1. Open this repo when the hackathon starts:
-   - https://github.com/Taruvi-ai/taruvi-hacks-template
-2. Create a GitHub Codespace (first load is usually ~2.5 minutes).
-3. Open `.env`, paste your `TARUVI_SITE_URL`, `TARUVI_APP_SLUG`, and `TARUVI_API_KEY`, then save.
-
-## Codespaces Behavior (Important)
-
-When Codex starts in the devcontainer:
-- It verifies required Taruvi env vars are present.
-- If missing, it asks you to update `.env` with `TARUVI_SITE_URL`, `TARUVI_APP_SLUG`, and `TARUVI_API_KEY`.
-- It writes `.codex/config.toml` with resolved Taruvi values.
-- It attempts to install the Codex VS Code extension.
-- It launches Codex after setup is complete.
-
-## Updating Config Later
-
-If you change your Taruvi site, app slug, or API key later:
-1. Edit `.env`
-2. Update `TARUVI_SITE_URL`, `TARUVI_APP_SLUG`, or `TARUVI_API_KEY`
-3. Run `npm run codex:refresh`
-4. Restart Codex if needed
-
-## Security Notes
-
-- `OPENAI_API_KEY` is injected via GitHub Codespaces secrets and must **never be committed** to the repository.
-- If a key was ever committed accidentally, rotate/revoke it immediately in the OpenAI dashboard.
-
-## Local Commands
-
-```bash
-npm run dev
-npm run build
-npm run start
+```env
+TARUVI_SITE_URL=https://insurance.taruvi.cloud
+TARUVI_APP_SLUG=hmg_stones
+TARUVI_APP_TITLE=HMG Stones
 ```
 
-## Tech Stack
+3. Run `npm run dev` and sign in using your authorized Taruvi account.
 
-- [Refine](https://refine.dev)
-- React + TypeScript
-- MUI
-- Taruvi Providers + Taruvi MCP integration
+Never commit environment files, API keys or access tokens. Do not expose credentials through `VITE_` variables. The legacy local gateway may require server-only configuration; the deployed frontend uses authenticated Taruvi native functions.
 
-## Customizing Navkit
+## Build
 
-Add items to the profile avatar dropdown (e.g. "Report an issue", help links) by editing `src/navkit/useNavkitProfileMenuItems.tsx`. Full instructions: [docs/GETTING_STARTED.md — Custom profile menu items](docs/GETTING_STARTED.md#custom-profile-menu-items).
+```sh
+npm run typecheck
+npm run build
+```
 
-## Learn More
+The generated `dist/` directory is a deployment artifact and is not tracked. The build includes only approved public runtime assets; stone images remain in private Taruvi storage. Backend configuration, roles, policies, records and secrets are managed separately in Taruvi, not installed by cloning this repository.
 
-- [Refine Docs](https://refine.dev/docs)
-- [Refine Data Provider Docs](https://refine.dev/docs/core/providers/data-provider/#overview)
-- [Refine MUI Docs](https://refine.dev/docs/ui-frameworks/mui/tutorial/)
+## Backend source
 
-## License
+`backend/hmg/functions/commands.py` contains the workflow implementation. `scripts/hmg/native-function-source.mjs` produces the native function source with the catalog registry and native entrypoint. `backend/hmg/schema.json` describes the application schema. Review and provision backend policies and functions separately before deploying to a new site.
 
-MIT
+## Scope of this source release
+
+Local tests, development notes, deployment readbacks, environment files and build archives are deliberately excluded. A successful source build does not certify live backend authorization, database policies or deployment readiness.
+
+## Attribution
+
+Based on Taruvi-ai/taruvi-hacks-template (MIT). Blueprint3D and bundled dependencies retain their licenses and notices under `vendor/blueprint3d/` and `public/hmg-blueprint3d/`. Preserve these notices when redistributing.

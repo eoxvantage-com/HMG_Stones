@@ -12,6 +12,8 @@
 // - The shipper's own POST cannot recurse through the fetch wrapper.
 // - All capture sites are wrapped in try/catch; logging can never crash the app.
 
+import { redactSensitive, redactText } from './redaction';
+
 export type LogSource =
   | "console-error"
   | "window-error"
@@ -44,7 +46,7 @@ type Store = {
 const INSTALL_FLAG = "__tv_client_logger_installed__";
 const ENABLE_LOGGER = (): boolean => {
   try {
-    return Boolean((import.meta as { env?: { VITE_ENABLE_CLIENT_LOGGER?: string } }).env?.VITE_ENABLE_CLIENT_LOGGER === "true");
+    return import.meta.env.VITE_ENABLE_CLIENT_LOGGER === "true";
   } catch {
     return false;
   }
@@ -168,7 +170,7 @@ const getAppSlug = (): string => {
 const record = (source: LogSource, values: unknown[], meta?: Record<string, unknown>): void => {
   try {
     const text = values
-      .map((v) => serializeValue(v))
+      .map((v) => redactText(serializeValue(redactSensitive(v))))
       .filter((s) => s.length > 0)
       .join(" ");
 
@@ -177,7 +179,7 @@ const record = (source: LogSource, values: unknown[], meta?: Record<string, unkn
       timestamp: new Date().toISOString(),
       source,
       text,
-      meta,
+      meta: redactSensitive(meta) as Record<string, unknown> | undefined,
     };
 
     if (source === "react-error-boundary") {
@@ -204,7 +206,7 @@ const record = (source: LogSource, values: unknown[], meta?: Record<string, unkn
 const buildPayload = (batch: LogEntry[]): string => {
   const sessionId = getSessionId();
   const appSlug = getAppSlug();
-  const url = typeof location !== "undefined" ? location.href : "";
+  const url = typeof location !== "undefined" ? redactText(location.href) : "";
   const userAgent = typeof navigator !== "undefined" ? navigator.userAgent : "";
 
   return JSON.stringify(
@@ -364,7 +366,7 @@ const patchConsole = (): void => {
   const original = console.error;
   console.error = (...args: unknown[]) => {
     record("console-error", args);
-    original.apply(console, args);
+    original.apply(console, args.map(value => redactSensitive(value)));
   };
 };
 

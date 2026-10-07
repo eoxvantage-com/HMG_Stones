@@ -27,11 +27,12 @@ declare module "@mui/material/Chip" {
 }
 
 // ─── Font families ──────────────────────────────────────────────────
-const FONT_BODY = "'Open Sans', sans-serif";
-const FONT_TITLE = "'Quicksand', sans-serif";
+const FONT_BODY = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+const FONT_TITLE = "Georgia, 'Times New Roman', serif";
 
 // ─── Brand tokens (full ramps + every named color from the spec) ────
 export const taruviTokens = {
+  hmg: { background: '#F6F3ED', paper: '#FFFFFF', ink: '#242824', muted: '#595F57', olive: '#4B563F', oliveDark: '#35402C', border: '#DDD9D0', bronze: '#8A6C48', soft: '#ECEFE5' },
   font: {
     body: FONT_BODY,
     title: FONT_TITLE,
@@ -1357,3 +1358,26 @@ export const darkThemeOptions: ThemeOptions = {
   spacing,
   components: componentOverrides('dark'),
 };
+
+// HMG architectural application layer. All product colors remain centralized here.
+const hmg = taruviTokens.hmg;
+const hmgComponents: ThemeOptions['components'] = {
+  MuiCssBaseline: { styleOverrides: { body: { fontFamily: FONT_BODY, fontSize: 16 }, '*:focus-visible': { outline: `2px solid ${hmg.olive}`, outlineOffset: 3 }, '@media (prefers-reduced-motion: reduce)': { '*, *::before, *::after': { animation: 'none !important', transition: 'none !important' } } } },
+  MuiButton: { defaultProps: { disableElevation: true }, styleOverrides: { root: { minHeight: 44, borderRadius: 6, textTransform: 'none', fontFamily: FONT_BODY, fontSize: 14, fontWeight: 600, letterSpacing: 0, padding: '10px 18px' }, containedPrimary: { backgroundColor: hmg.olive, '&:hover': { backgroundColor: hmg.oliveDark } } } },
+  MuiIconButton: { styleOverrides: { root: { minHeight: 44, minWidth: 44 } } },
+  MuiCard: { styleOverrides: { root: { border: `1px solid ${hmg.border}`, borderRadius: 8, boxShadow: 'none', backgroundImage: 'none' } } },
+  MuiCardContent: { styleOverrides: { root: { padding: 24, '&:last-child': { paddingBottom: 24 } } } },
+  MuiChip: { styleOverrides: { root: { fontFamily: FONT_BODY, fontSize: 12, fontWeight: 600, textTransform: 'none', letterSpacing: 0, height: 28 } } },
+  MuiOutlinedInput: { styleOverrides: { root: { borderRadius: 6, backgroundColor: hmg.paper, fontSize: 16 }, input: { padding: '12px 14px' }, notchedOutline: { borderColor: hmg.border } } },
+  MuiInputLabel: { styleOverrides: { root: { fontFamily: FONT_BODY, fontSize: 14 } } },
+  MuiFormHelperText: { styleOverrides: { root: { fontSize: 14 } } },
+  MuiTab: { styleOverrides: { root: { fontFamily: FONT_BODY, fontSize: 14, minHeight: 48, textTransform: 'none', letterSpacing: 0 } } },
+  MuiTableCell: { styleOverrides: { root: { fontSize: 14, padding: '16px', borderColor: hmg.border }, head: { fontFamily: FONT_BODY, fontSize: 12, fontWeight: 600, textTransform: 'uppercase', backgroundColor: hmg.background } } },
+  MuiDialog: { styleOverrides: { paper: { borderRadius: 8, padding: taruviTokens.spacing.cardPadding, boxShadow: taruviTokens.shadow.card } } },
+  MuiDialogTitle: { styleOverrides: { root: { fontFamily: FONT_TITLE, fontSize: 24, padding: 0, marginBottom: taruviTokens.spacing.formFieldGap, overflowWrap: 'anywhere' } } },
+};
+lightThemeOptions.palette = { ...lightThemeOptions.palette, primary: { main: hmg.olive, dark: hmg.oliveDark, contrastText: hmg.paper }, background: { default: hmg.background, paper: hmg.paper }, text: { primary: hmg.ink, secondary: hmg.muted }, divider: hmg.border };
+lightThemeOptions.typography = { ...typography, fontSize: 16, h1: { fontFamily: FONT_TITLE, fontSize: '2.5rem', fontWeight: 400 }, h2: { fontFamily: FONT_TITLE, fontSize: '2rem', lineHeight: 1.25, fontWeight: 400 }, h3: { fontFamily: FONT_TITLE, fontSize: '1.375rem', lineHeight: 1.4, fontWeight: 400 }, body1: { fontSize: '1rem', lineHeight: 1.5 }, body2: { fontSize: '.875rem', lineHeight: 1.5 }, caption: { fontSize: '.875rem' }, button: { fontFamily: FONT_BODY, textTransform: 'none' } };
+lightThemeOptions.components = { ...lightThemeOptions.components, ...hmgComponents };
+// The visual brief intentionally has one consistent architectural palette.
+Object.assign(darkThemeOptions, lightThemeOptions);

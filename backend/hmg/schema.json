@@ -1,0 +1,147 @@
+{
+  "name": "hmg-demo",
+  "resources": [
+    {
+      "name": "hmg_options",
+      "schema": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "constraints": {
+              "required": true
+            }
+          },
+          {
+            "name": "title",
+            "type": "string",
+            "constraints": {
+              "required": true
+            }
+          },
+          {
+            "name": "tone",
+            "type": "string"
+          },
+          {
+            "name": "movement",
+            "type": "string"
+          },
+          {
+            "name": "application",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "data",
+            "type": "object",
+            "constraints": {
+              "required": true
+            }
+          }
+        ],
+        "primaryKey": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "hmg_revisions",
+      "audit_enabled": true,
+      "schema": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "constraints": {
+              "required": true
+            }
+          },
+          {
+            "name": "project_id",
+            "type": "string",
+            "constraints": {
+              "required": true
+            }
+          },
+          {
+            "name": "version",
+            "type": "integer",
+            "constraints": {
+              "required": true
+            }
+          },
+          {
+            "name": "command_key",
+            "type": "string",
+            "constraints": {
+              "required": true,
+              "unique": true
+            }
+          },
+          {
+            "name": "owner_id",
+            "type": "string",
+            "constraints": {
+              "required": true
+            }
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "constraints": {
+              "required": true
+            }
+          },
+          {
+            "name": "stage",
+            "type": "string"
+          },
+          {
+            "name": "archived",
+            "type": "boolean"
+          },
+          {
+            "name": "created_at",
+            "type": "datetime"
+          },
+          {
+            "name": "snapshot",
+            "type": "object",
+            "constraints": {
+              "required": true
+            }
+          }
+        ],
+        "primaryKey": [
+          "id"
+        ],
+        "indexes": [
+          {
+            "name": "hmg_project_version_uq",
+            "fields": [
+              "project_id",
+              "version"
+            ],
+            "unique": true
+          },
+          {
+            "name": "hmg_project_lookup",
+            "fields": [
+              "project_id"
+            ]
+          },
+          {
+            "name": "hmg_owner_lookup",
+            "fields": [
+              "owner_id"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
