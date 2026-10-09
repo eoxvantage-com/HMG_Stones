@@ -295,8 +295,13 @@ function StudioEditor({
   });
   const command = useProjectCommand(project, refresh);
   const saveLock = useRef(false);
+  const prepareLock = useRef(false);
+  const [preparePending, setPreparePending] = useState(false);
   const [savePending, setSavePending] = useState(false);
-  const busy = command.busy || savePending;
+  const busy = command.busy || savePending || preparePending;
+  const designSummaries = (project.studioQuoteSummaries || []).filter(q => q.designId === design.id);
+  const latestSummaries = [...new Map(designSummaries.map(q => [q.option, q])).values()];
+  const historicalSummaries = designSummaries.filter(q => !latestSummaries.includes(q));
   const factor = design.room.unit === "ft" ? 3.280839895 : 1;
   const dimensionsDirty =
     dimensions.name !== design.room.name ||
@@ -486,6 +491,14 @@ function StudioEditor({
     }
   };
   const prepare = async () => {
+    if (busy || prepareLock.current || dirty || dimensionsDirty || !savedRevision) return;
+    if (designSummaries.some(q => q.option === design.activeOption && q.designRevision === savedRevision && q.geometryRevision === design.geometryRevision)) {
+      setQuoteOpen(true);
+      setError("");
+      return;
+    }
+    prepareLock.current = true;
+    setPreparePending(true);
     try {
       const result = await command.run(
         "prepareStudioQuote",
@@ -502,6 +515,9 @@ function StudioEditor({
       setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Quote summary not prepared");
+    } finally {
+      prepareLock.current = false;
+      setPreparePending(false);
     }
   };
   const selectedAssignment = selected
@@ -1659,9 +1675,7 @@ function StudioEditor({
         <DialogTitle>Unpriced studio quote review</DialogTitle>
         <DialogContent>
           <Stack gap={2}>
-            {project.studioQuoteSummaries
-              ?.filter((q) => q.designId === design.id)
-              .map((q) => (
+            {latestSummaries.map((q) => (
                 <Box key={q.id}>
                   <Typography variant="h3">
                     Option {q.option} / Geometry revision {q.geometryRevision}
@@ -1734,6 +1748,20 @@ function StudioEditor({
                   </Button>
                 </Box>
               ))}
+            {historicalSummaries.length > 0 && <Accordion>
+              <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                <Typography>Summary history ({historicalSummaries.length})</Typography>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Stack gap={2}>
+                  {historicalSummaries.map(q => <Box key={q.id}>
+                    <Typography variant="h3">Option {q.option} / Design revision {q.designRevision} / Geometry revision {q.geometryRevision}</Typography>
+                    <Typography>Historical summary / Total {q.totalAreaM2} m2</Typography>
+                    {q.lines.map(line => <Typography key={line.surfaceId}>{line.name}: {line.areaM2} m2 / Reference {line.assetId || "Unassigned"}</Typography>)}
+                  </Box>)}
+                </Stack>
+              </AccordionDetails>
+            </Accordion>}
           </Stack>
         </DialogContent>
         <DialogActions>

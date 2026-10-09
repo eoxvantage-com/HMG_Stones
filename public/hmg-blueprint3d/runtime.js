@@ -12,7 +12,7 @@ const [nonce,encodedHostOrigin='']=location.hash.slice(1).split('|');
 let hostOrigin='';
 try{const candidate=decodeURIComponent(encodedHostOrigin),parsed=new URL(candidate);if(['http:','https:'].includes(parsed.protocol)&&parsed.origin===candidate)hostOrigin=candidate;}catch{}
 const planEl=document.getElementById('plan'),threeEl=document.getElementById('three'),selection=document.getElementById('selection'),notice=document.getElementById('notice');
-let design,selected=null,view='2d',model,planner,three,highlight,roomObjects,frame=0,disposed=false,lastGeometry='',lastCamera='',lastObjectState='',lastReset,muting=false,cameraTimer,contextLost=false;
+let design,selected=null,view='2d',model,planner,three,highlight,roomObjects,frame=0,disposed=false,lastGeometry='',lastCamera='',lastObjectState='',lastReset,muting=false,cameraTimer,contextLost=false,resizeFrame=0,lastResizeSignature='',lastHighlightSignature='';
 const parentSend=(type,payload={})=>parent.postMessage({channel:CHANNEL,nonce,type,...payload},'*');
 function status(message){notice.textContent=message;parentSend('status',{message});}
 function schedule(){if(!frame&&!disposed)frame=requestAnimationFrame(()=>{frame=0;if(three&&!contextLost&&view==='3d')three.renderOnce();drawSelection();});}
@@ -31,14 +31,20 @@ function initialize(){
 function wallIndex(edge){const start=edge.wall.getStart().id,end=edge.wall.getEnd().id;if(design.schemaVersion===2)return design.room.perimeter.findIndex((vertex,i)=>{const next=design.room.perimeter[(i+1)%design.room.perimeter.length];return vertex.id===start&&next.id===end||vertex.id===end&&next.id===start;});return design.room.cornerIds.findIndex((id,i)=>id===start&&design.room.cornerIds[(i+1)%4]===end || id===end&&design.room.cornerIds[(i+1)%4]===start);}
 function selectablePlanes(){if(!model||!design)return [];const rooms=model.floorplan.getRooms();const interior=model.floorplan.wallEdgePlanes().filter(plane=>rooms.includes(plane.edge.room));return [...interior,...model.floorplan.floorPlanes()];}
 function surfaceId(plane){if(plane.room)return design.room.id+':floor';const i=wallIndex(plane.edge);if(i<0)return null;if(design.schemaVersion===2){const start=design.room.perimeter[i],end=design.room.perimeter[(i+1)%design.room.perimeter.length];return edgeId(design.room.id,start.id,end.id);}return design.room.wallSideIds[i];}
-function highlightSurface(){if(!three)return;if(highlight){model.scene.remove(highlight);highlight=null;}if(!selected)return;const plane=selectablePlanes().find(p=>surfaceId(p)===selected);if(!plane)return;const geometry=new THREE.Geometry();for(const [a,b] of boundaryEdges(plane.geometry.faces))geometry.vertices.push(plane.geometry.vertices[a].clone(),plane.geometry.vertices[b].clone());const material=new THREE.LineBasicMaterial({color:Number(colors.olive.replace('#','0x')),linewidth:2,depthTest:false,depthWrite:false});highlight=new THREE.Line(geometry,material,THREE.LinePieces);highlight.position.copy(plane.position);highlight.rotation.copy(plane.rotation);highlight.scale.copy(plane.scale);model.scene.add(highlight);}
+function highlightSurface(){if(!three)return;const signature=JSON.stringify([lastGeometry,selected]);if(signature===lastHighlightSignature)return;lastHighlightSignature=signature;if(highlight){model.scene.remove(highlight);highlight=null;}if(!selected)return;const plane=selectablePlanes().find(p=>surfaceId(p)===selected);if(!plane)return;const geometry=new THREE.Geometry();for(const [a,b] of boundaryEdges(plane.geometry.faces))geometry.vertices.push(plane.geometry.vertices[a].clone(),plane.geometry.vertices[b].clone());const material=new THREE.LineBasicMaterial({color:Number(colors.olive.replace('#','0x')),linewidth:2,depthTest:false,depthWrite:false});highlight=new THREE.Line(geometry,material,THREE.LinePieces);highlight.position.copy(plane.position);highlight.rotation.copy(plane.rotation);highlight.scale.copy(plane.scale);model.scene.add(highlight);}
 function select(id){selected=id;highlightSurface();schedule();parentSend('selection',{surfaceId:id});}
-function applyView(){const actual=view==='3d'&&three&&!contextLost?'3d':'2d';threeEl.hidden=actual!=='3d';planEl.hidden=actual!=='2d';resize();}
+function applyView(){const actual=view==='3d'&&three&&!contextLost?'3d':'2d';threeEl.hidden=actual!=='3d';planEl.hidden=actual!=='2d';queueResize();schedule();}
 function roomVertices(document){const room=document.room;if(document.schemaVersion===2)return room.perimeter;return [{id:room.cornerIds[0],xM:0,zM:0},{id:room.cornerIds[1],xM:room.length,zM:0},{id:room.cornerIds[2],xM:room.length,zM:room.width},{id:room.cornerIds[3],xM:0,zM:room.width}];}
 function projectedRoomVertices(document){return roomVertices(document).map(vertex=>[planner.convertX(vertex.xM*100),planner.convertY(vertex.zM*100)]);}
 function floorCanvasRect(document){return {left:planner.convertX(0),top:planner.convertY(0),right:planner.convertX(document.room.length*100),bottom:planner.convertY(document.room.width*100)};}
-function resize(){if(!planner||!design)return;const box=planEl.getBoundingClientRect();selection.width=Math.max(1,Math.round(box.width));selection.height=Math.max(1,Math.round(box.height));
- if(!planEl.hidden){const cm=Math.max(design.room.length*100/Math.max(120,box.width-100),design.room.width*100/Math.max(120,box.height-100));planner.cmPerPixel=cm;planner.pixelsPerCm=1/cm;planner.reset();}
+function queueResize(){if(disposed||resizeFrame)return;resizeFrame=requestAnimationFrame(()=>{resizeFrame=0;if(!disposed)resize();});}
+function resize(){if(!planner||!design)return;const active=planEl.hidden?threeEl:planEl,box=active.getBoundingClientRect();
+ const width=Math.max(1,Math.round(box.width)),height=Math.max(1,Math.round(box.height));
+ const signature=JSON.stringify([width,height,planEl.hidden,lastGeometry]);if(signature===lastResizeSignature)return;
+ lastResizeSignature=signature;
+ if(!planEl.hidden){if(selection.width!==width)selection.width=width;if(selection.height!==height)selection.height=height;
+  const cm=Math.max(design.room.length*100/Math.max(120,box.width-100),design.room.width*100/Math.max(120,box.height-100));planner.cmPerPixel=cm;planner.pixelsPerCm=1/cm;planner.reset();
+ }
  if(three&&!contextLost&&!threeEl.hidden)three.updateWindowSize();schedule();}
 function traceRoom(ctx,p){ctx.beginPath();ctx.moveTo(...p[0]);for(const point of p.slice(1))ctx.lineTo(...point);ctx.closePath();}
 function drawSelection(){if(!design||planEl.hidden||!planner)return;const ctx=selection.getContext('2d');ctx.clearRect(0,0,selection.width,selection.height);const p=projectedRoomVertices(design),floor=materials.canvas(design.room.id+':floor'),rect=floorCanvasRect(design);
@@ -67,5 +73,5 @@ function receive(event){if(disposed||!hostOrigin||event.source!==parent||event.o
  const objectState=JSON.stringify(design.objects||[]);if(objectState!==lastObjectState){if(roomObjects)disposeRoomObjects(THREE,roomObjects);roomObjects=renderRoomObjects(THREE,design.room,design.objects||[]);model.scene.getScene().add(roomObjects);lastObjectState=objectState;}
  highlightSurface();applyView();materials.update(design,surfaces(design),imageUrls);
 }
-function dispose(){if(disposed)return;disposed=true;materials.dispose();privateImages.dispose();if(roomObjects)disposeRoomObjects(THREE,roomObjects);cancelAnimationFrame(frame);clearTimeout(cameraTimer);observer.disconnect();window.removeEventListener('message',receive);$(window).off();$(document).off();if(three)three.dispose();model=null;planner=null;three=null;}
-const observer=new ResizeObserver(resize);observer.observe(document.body);window.addEventListener('message',receive);window.addEventListener('pagehide',dispose,{once:true});parentSend('ready');
+function dispose(){if(disposed)return;disposed=true;materials.dispose();privateImages.dispose();if(roomObjects)disposeRoomObjects(THREE,roomObjects);cancelAnimationFrame(frame);cancelAnimationFrame(resizeFrame);clearTimeout(cameraTimer);observer.disconnect();window.removeEventListener('message',receive);$(window).off();$(document).off();if(three)three.dispose();model=null;planner=null;three=null;}
+const observer=new ResizeObserver(queueResize);observer.observe(document.body);window.addEventListener('message',receive);window.addEventListener('pagehide',dispose,{once:true});parentSend('ready');

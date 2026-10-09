@@ -678,6 +678,9 @@ def execute(params,user,db):
         if not entry or p.get('designRevision')!=entry['revision'] or p.get('geometryRevision')!=entry['design']['geometryRevision']:raise ValueError('Save and review the current design revision first')
         if p.get('option') not in ['A','B']:raise ValueError('Choose Option A or B')
         summaries=s.setdefault('studioQuoteSummaries',[])
+        # Preparing the same immutable source is a read, not a new history event.
+        if any(all(summary.get(key)==p.get(key) for key in ('designId','designRevision','geometryRevision','option')) for summary in summaries):
+            return {'ok':True,'version':s['version'],'data':project_view(s,user)}
         if len(summaries)>=50:raise ValueError('Maximum fifty studio summaries per project')
         summaries.append(studio_summary(entry,p['option'],now))
     elif cmd=='configureDemoProject':
