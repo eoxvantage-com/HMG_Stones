@@ -61,6 +61,7 @@ import { AiFindingsPanel } from "../../features/hmg/components/AiFindingsPanel";
 import { DemoControls } from "../../features/hmg/components/DemoControls";
 import { useBriefAutosave } from "../../features/hmg/useBriefAutosave";
 import { EvidenceDrawer } from "../../features/hmg/components/EvidenceDrawer";
+import { PlanTo3DPanel } from "../../features/hmg/plan3d/PlanTo3DPanel";
 
 const emptyBrief: HmgBrief = {
   room: "",
@@ -877,6 +878,7 @@ export function ProjectPage({
               <Tab label={`Shortlist (${p.shortlist.length})`} />
               <Tab label={`Questions (${p.questions.length})`} />
               <Tab label={`Activity (${p.timeline.length})`} />
+              <Tab label={`Plan to 3D (${p.planUploads?.length || 0})`} />
             </Tabs>
             <Box sx={columnGrid}>
               <Stack spacing={3}>
@@ -1215,6 +1217,9 @@ export function ProjectPage({
                       )}
                     </Stack>
                   </Panel>
+                )}
+                {tab === 4 && (
+                  <PlanTo3DPanel project={p} command={command} refresh={query.refetch} />
                 )}
                 {tab === 3 && (
                   <Panel title="Decision history">

@@ -119,22 +119,25 @@ const createClientLogPlugin = (): Plugin => ({
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
+  const taruviSiteUrl = env.VITE_TARUVI_API_URL || env.VITE_TARUVI_BASE_URL || env.TARUVI_SITE_URL || "";
+  const taruviAppSlug = env.VITE_TARUVI_APP_SLUG || env.TARUVI_APP_SLUG || "";
+  const taruviApiKey = env.VITE_TARUVI_API_KEY || env.TARUVI_API_KEY || "";
 
   return {
     // Only explicitly defined public constants may reach browser code.
     envPrefix: [],
     define: {
       'import.meta.env.VITE_ENABLE_CLIENT_LOGGER': JSON.stringify(env.VITE_ENABLE_CLIENT_LOGGER === 'true' ? 'true' : 'false'),
-      __TARUVI_SITE_URL__: JSON.stringify(env.TARUVI_SITE_URL ?? ""),
-      __TARUVI_APP_SLUG__: JSON.stringify(env.TARUVI_APP_SLUG ?? ""),
+      __TARUVI_SITE_URL__: JSON.stringify(taruviSiteUrl),
+      __TARUVI_APP_SLUG__: JSON.stringify(taruviAppSlug),
       __TARUVI_APP_TITLE__: JSON.stringify(env.TARUVI_APP_TITLE ?? ""),
     },
     plugins: [react(), privateSafePublicAssets(), createClientLogPlugin(), {
       name: 'hmg:workflow-gateway',
       configureServer(server) {
         server.middlewares.use(createWorkflowMiddleware({
-          siteUrl: env.TARUVI_SITE_URL, appSlug: env.TARUVI_APP_SLUG,
-          apiKey: env['TARUVI_API_KEY'], allowedOrigin: env.HMG_ALLOWED_ORIGIN,
+          siteUrl: taruviSiteUrl, appSlug: taruviAppSlug,
+          apiKey: taruviApiKey, allowedOrigin: env.HMG_ALLOWED_ORIGIN,
           development: true,
         }));
       },

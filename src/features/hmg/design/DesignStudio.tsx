@@ -1,13 +1,13 @@
-import { Component, lazy, Suspense, useRef, useState, type ReactNode } from 'react';
-import { Alert, Box, Button, Chip, MenuItem, Skeleton, Stack, Tab, Tabs, TextField, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
+import { Component, useRef, useState, type ReactNode } from 'react';
+import { Alert, Box, Button, Chip, MenuItem, Stack, Tab, Tabs, TextField, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
 import RestartAltRoundedIcon from '@mui/icons-material/RestartAltRounded';
 import UndoRoundedIcon from '@mui/icons-material/UndoRounded';
 import RedoRoundedIcon from '@mui/icons-material/RedoRounded';
 import { cameraPreset, constrainCamera, type DesignState } from './state';
+import RoomScene from './RoomScene';
 import { ReferenceCanvas } from './ReferenceCanvas';
 import { approvedGalleryReferences } from './galleryReferences';
 
-const RoomScene = lazy(() => import('./RoomScene'));
 class RendererBoundary extends Component<{ children: ReactNode; onFailure: () => void }, { failed: boolean }> {
   state = { failed: false };
   static getDerivedStateFromError() { return { failed: true }; }
@@ -55,7 +55,7 @@ function DesignEditor({ value, onChange }: DesignStudioProps) {
       {tab === 0 ? <ReferenceCanvas key={value.reference.assetId} value={value} onChange={update} /> : !entered ? <Box sx={{ minHeight: 320, display: 'grid', placeContent: 'center', gap: 2, p: 3, bgcolor: 'action.hover' }}>
         <Typography variant="h5">Explore the composition</Typography><Typography>Real interactive geometry. No simulated stone finish.</Typography>
         <Button variant="contained" onClick={() => setEntered(true)}>Enter 3D room</Button>
-      </Box> : <RendererBoundary onFailure={() => outcome('incomplete')}><Suspense fallback={<Skeleton variant="rectangular" height={400} aria-label="Loading interactive room" />}><RoomScene value={value} onStatusChange={outcome} onCameraChange={camera => update({ ...latest.current, camera })} /></Suspense></RendererBoundary>}
+      </Box> : <RendererBoundary onFailure={() => outcome('incomplete')}><RoomScene value={value} onStatusChange={outcome} onCameraChange={camera => update({ ...latest.current, camera })} /></RendererBoundary>}
       <Alert severity="info">Stone overlay unavailable: an eligible material image and surface mask are required. Material appearance is not rendered.</Alert>
     </Stack>
     <Stack spacing={2}>

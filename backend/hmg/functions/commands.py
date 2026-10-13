@@ -12,6 +12,24 @@ DEMO = 'HMG Stones'
 TABLE = 'hmg_revisions'
 APP_ROLE = 'HMG Administrator'
 SERVICE_USER_ID = '4f7ff492-8af6-4059-ae61-ce13fe3d4b20'
+
+def command_secret_value(secret):
+    value=secret.get("value") if isinstance(secret,dict) else secret
+    if isinstance(value,dict):value=value.get("api_key") or value.get("key")
+    if not isinstance(value,str) or not value.strip() or value=="[ENCRYPTED]":raise ValueError("Gemini key unavailable")
+    return value.strip()
+
+def verified_extraction_payload(payload,sdk_client):
+    draft=payload.get("draft") if isinstance(payload,dict) else None
+    if not isinstance(draft,dict):return payload
+    proof=draft.get("extractionProof")
+    if not isinstance(proof,str) or not re.fullmatch(r"[a-f0-9]{64}",proof):return payload
+    clean=copy.deepcopy(draft);clean.pop("extractionProof",None)
+    api_key=command_secret_value(sdk_client.secrets.get("G_API_key"))
+    expected=hashlib.sha256(("v1:"+api_key+":"+json.dumps(clean,sort_keys=True,separators=(",", ":"))).encode("utf-8")).hexdigest()
+    if proof!=expected:raise ValueError("Invalid extraction proof")
+    next_payload=copy.deepcopy(payload);next_payload["draft"]=clean;next_payload["serverVerifiedExtraction"]=True
+    return next_payload
 DEMO_TEAM = {'consultant':'f4e9385e-dbcf-45df-81c9-ff3510f7595d','operations':'5b031e5f-1e55-4a89-ba22-85f1b3cde90d','salesHead':'aee9e4b1-e1de-4086-8d26-b0434819c8af'}
 PRICING_COMMANDS = {'getQuote','listQuotes','listQuoteCandidates','createStudioQuoteDraft','createQuoteDraft','saveQuoteRevision','withdrawQuoteDraft','requestPriceApproval','reviewPriceApproval','createProposalSnapshot','previewDemoReset','resetDemoProject'}
 STAFF_COMMANDS = {'getSalesProject','listSalesPipeline','createLead','updateLead','transitionSalesStage','getQuote','listQuotes','listQuoteCandidates','createStudioQuoteDraft','answerQuestion','saveStaffNote','deleteStaffNoteDraft','updateSalesStage','recordCheck','assignTask','createQuoteDraft','saveQuoteRevision','withdrawQuoteDraft','requestPriceApproval','reviewPriceApproval','createProposalSnapshot','markDemoLotUnavailable','overview','previewDemoReset','resetDemoProject'}
@@ -248,6 +266,7 @@ def safe(project):
     result['proposals']=[{'id':x['id'],'at':x['at'],'demoLabel':DEMO,'quote':public_quote(x['quote']),'currentness':'Current' if quote_current(project,x['quote']) and x['quote'].get('termsHash')==(project.get('quote') or {}).get('termsHash') else 'Stale'} for x in project.get('proposals',[])]
     result['stoneStudioDesigns']=copy.deepcopy(project.get('stoneStudioDesigns',[]))
     result['studioQuoteSummaries']=copy.deepcopy(project.get('studioQuoteSummaries',[]))
+    result['planUploads']=copy.deepcopy(project.get('planUploads',[]))
     result['alternatives']=copy.deepcopy(project.get('alternatives',{}))
     result['evidence']=[normalized_check(x) for x in project.get('checks',[]) if x.get('customerVisible') is True]
     result['eligibility']={oid:option_eligibility(project,oid) for oid in project['shortlist']}
@@ -286,6 +305,99 @@ def lead_replay_authorized(db, record, actor, manager):
         return False
     current=latest(db,snapshot['id'])
     return bool(current and current.get('project_id')==snapshot['id'] and (manager or actor in current.get('snapshot',{}).get('participants',[])))
+
+
+PLAN_BUCKET='hmg-project-plans'
+PLAN_MIME_TYPES={'application/pdf','image/png','image/jpeg','image/webp'}
+PLAN_ROOM_CATEGORIES={'hall','kitchen','bedroom','toilet','sit_out','pooja','stair','other'}
+PLAN_ROOM_CONFIDENCE={'high','medium','low'}
+PLAN_OPENING_TYPES={'door','window','ventilator','main_door','unknown'}
+PLAN_FACING={'north','south','east','west','unknown'}
+
+def plan_upload_id(value):
+    if not isinstance(value,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,100}',value):raise ValueError('Invalid plan upload identifier')
+    return value
+
+def safe_plan_filename(value):
+    if not isinstance(value,str) or not re.fullmatch(r'[A-Za-z0-9._ -]{1,180}\.(?:pdf|png|jpe?g|webp)',value,re.IGNORECASE) or '..' in value or '/' in value or '\\' in value:raise ValueError('Invalid plan file name')
+    return value.strip()
+
+def validate_plan_storage_path(project_id,upload_id,path,filename):
+    if not isinstance(path,str) or path!=f'projects/{project_id}/plans/{upload_id}/{filename}':raise ValueError('Invalid plan storage path')
+    return path
+
+def plan_upload(project,upload_id):
+    return first((x for x in project.get('planUploads',[]) if x.get('id')==upload_id),None)
+
+def plan_number(value,low,high,name='dimension'):
+    if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or value<low or value>high:raise ValueError('Invalid reviewed plan '+name)
+    return float(value)
+
+def reviewed_room(raw,default_height):
+    if not isinstance(raw,dict):raise ValueError('Invalid reviewed room')
+    rid=plan_upload_id(raw.get('id'));name=text(raw.get('name'),120);category=raw.get('category','other')
+    if category not in PLAN_ROOM_CATEGORIES:raise ValueError('Invalid room category')
+    length=plan_number(raw.get('lengthFt'),3.3,100,'length');width=plan_number(raw.get('widthFt'),3.3,100,'width')
+    height=plan_number(raw.get('heightFt',default_height),6,20,'height')
+    include_floor=raw.get('includeFloor',True)
+    if not isinstance(include_floor,bool):raise ValueError('Invalid floor inclusion')
+    include_walls=raw.get('includeInteriorWalls',category in {'kitchen','toilet'})
+    if not isinstance(include_walls,bool):raise ValueError('Invalid wall inclusion')
+    return {'id':rid,'name':name,'category':category,'lengthFt':length,'widthFt':width,'heightFt':height,'includeFloor':include_floor,'includeInteriorWalls':include_walls}
+
+def plan_dimension(value,name):
+    if value is None or value=='':return None
+    return plan_number(value,1,100,name)
+
+def extracted_room(raw):
+    if not isinstance(raw,dict):raise ValueError('Invalid extracted room')
+    rid=plan_upload_id(raw.get('id'));label=text(raw.get('label',raw.get('name')),120);category=raw.get('category','other')
+    if category not in PLAN_ROOM_CATEGORIES:raise ValueError('Invalid room category')
+    confidence=raw.get('confidence','medium')
+    if confidence not in PLAN_ROOM_CONFIDENCE:raise ValueError('Invalid extraction confidence')
+    include_floor=raw.get('includeFloor',True)
+    if not isinstance(include_floor,bool):raise ValueError('Invalid floor inclusion')
+    include_walls=raw.get('includeInteriorWalls',category in {'kitchen','toilet'})
+    if not isinstance(include_walls,bool):raise ValueError('Invalid wall inclusion')
+    return {'id':rid,'label':label,'category':category,'lengthFt':plan_dimension(raw.get('lengthFt'),'length'),'widthFt':plan_dimension(raw.get('widthFt'),'width'),'heightFt':plan_dimension(raw.get('heightFt'),'height'),'includeFloor':include_floor,'includeInteriorWalls':include_walls,'confidence':confidence,'notes':text_array(raw.get('notes',[]),10)}
+
+def extracted_opening(raw,index=0):
+    if not isinstance(raw,dict):raise ValueError('Invalid extracted opening')
+    oid=plan_upload_id(raw.get('id') or f'opening-{index+1}');kind=raw.get('type','unknown')
+    if kind not in PLAN_OPENING_TYPES:raise ValueError('Invalid opening type')
+    result={'id':oid,'type':kind,'label':text(raw.get('label'),120),'notes':optional_text(raw.get('notes',''),500)}
+    room_id=raw.get('roomId','')
+    if room_id:result['roomId']=plan_upload_id(room_id)
+    wall=raw.get('wall','')
+    if wall:
+        if wall not in {'north','east','south','west','unknown'}:raise ValueError('Invalid opening wall')
+        result['wall']=wall
+    width=plan_dimension(raw.get('widthFt'),'opening width')
+    height=plan_dimension(raw.get('heightFt'),'opening height')
+    if width is not None:result['widthFt']=width
+    if height is not None:result['heightFt']=height
+    return result
+
+def plan_extraction_draft(raw,upload_id):
+    if not isinstance(raw,dict):raise ValueError('Plan extraction draft required')
+    rooms_raw=raw.get('rooms')
+    if not isinstance(rooms_raw,list) or not 1<=len(rooms_raw)<=30:raise ValueError('Extracted plan must include 1 to 30 rooms')
+    openings_raw=raw.get('openings',[])
+    if not isinstance(openings_raw,list) or len(openings_raw)>80:raise ValueError('Extracted plan has too many openings')
+    facing=raw.get('buildingFacing','unknown')
+    if facing not in PLAN_FACING:raise ValueError('Invalid building facing')
+    area=raw.get('builtUpAreaSqFt')
+    if area is not None:area=plan_number(area,1,100000,'built-up area')
+    source=raw.get('sourceUploadId',upload_id)
+    if source!=upload_id:raise ValueError('Extraction upload mismatch')
+    return {'sourceUploadId':upload_id,'model':optional_text(raw.get('model',''),120),'generatedAt':optional_text(raw.get('generatedAt',''),40),'buildingFacing':facing,'builtUpAreaSqFt':area,'floorName':optional_text(raw.get('floorName','Ground Floor'),120) or 'Ground Floor','rooms':[extracted_room(room) for room in rooms_raw],'openings':[extracted_opening(opening,i) for i,opening in enumerate(openings_raw)],'warnings':text_array(raw.get('warnings',[]),20),'rawTextPreview':optional_text(raw.get('rawTextPreview',''),2000)}
+
+def plan_room_design(project_id,floor_name,room,index):
+    length=round(room['lengthFt']*0.3048,4);width=round(room['widthFt']*0.3048,4);height=round(room['heightFt']*0.3048,4)
+    rid=('plan-'+re.sub(r'[^a-zA-Z0-9_-]+','-',room['id']).strip('-')+'-'+str(index+1))[:80]
+    walls=[rid+':'+x for x in ['north','east','south','west']]
+    design={'schemaVersion':1,'id':str(uuid.uuid4()),'projectId':project_id,'name':text((floor_name+' - '+room['name'])[:120],120),'geometryRevision':1,'room':{'id':rid,'name':room['name'],'length':length,'width':width,'height':height,'unit':'m','cornerIds':[rid+':'+x for x in ['nw','ne','se','sw']],'wallIds':walls,'wallSideIds':[x+':interior' for x in walls]},'activeOption':'A','options':{'A':{'assignments':{}},'B':{'assignments':{}}},'camera':{'position':[round(length*1.3,4),6,round(width*1.5,4)],'target':[round(length/2,4),1,round(width/2,4)]},'objects':[]}
+    return validate_studio(design,project_id)
 
 def blank(pid,name,owner,brief):
     return {'id':pid,'name':name,'ownerId':owner,'participants':[owner]+list(DEMO_TEAM.values()),'assignedConsultantId':DEMO_TEAM['consultant'],'operationsId':DEMO_TEAM['operations'],'salesHeadId':DEMO_TEAM['salesHead'],'isDemo':True,'version':0,'selectionVersion':1,'stage':'Discovery','archived':False,'brief':{'room':'Living room feature wall','application':'Feature wall','quantity':'','unit':'sq ft','priorities':[],'requirements':'Application suitability requires verification',**validate_brief(brief)},'shortlist':[],'preferredOptionId':None,'rejected':{},'questions':[],'concepts':[],'timeline':[],'inquiries':[],'proposals':[],'unavailable':[],'notes':[],'checks':[],'tasks':[],'quote':None,'quoteHistory':[]}
@@ -481,7 +593,7 @@ def studio_summary(entry,option,now):
             end=vertices[(i+1)%len(vertices)]
             surface_id=r['id']+':edge:'+':'.join(sorted([start['id'],end['id']]))
             edge_length=Decimal(str(math.hypot(end['xM']-start['xM'],end['zM']-start['zM'])))
-            surfaces.append((surface_id,'Interior wall ('+start['id']+'â€“'+end['id']+')',edge_length*h))
+            surfaces.append((surface_id,'Interior wall ('+start['id']+'-'+end['id']+')',edge_length*h))
     else:
         surfaces=[(r['id']+':floor','Floor',l*w)]+[(r['wallSideIds'][i],name+' interior wall',(l if i%2==0 else w)*h) for i,name in enumerate(['North','East','South','West'])]
     for sid,name,area in surfaces:
@@ -662,6 +774,63 @@ def execute(params,user,db):
                 raise ValueError('Invalid legacy project stage')
             s['stage']=p['stage']
         else:change_sales_stage(s,p.get('stage'),p.get('reason'),actor,now)
+    elif cmd=='createPlanUpload':
+        upload_id=plan_upload_id(p.get('uploadId'));filename=safe_plan_filename(p.get('fileName'))
+        if p.get('storageBucket')!=PLAN_BUCKET:raise ValueError('Invalid plan storage bucket')
+        validate_plan_storage_path(pid,upload_id,p.get('storagePath'),filename)
+        if p.get('mimeType') not in PLAN_MIME_TYPES:raise ValueError('Unsupported plan file type')
+        size=p.get('sizeBytes')
+        if isinstance(size,bool) or not isinstance(size,int) or size<=0 or size>20*1024*1024:raise ValueError('Plan file size must be between 1 byte and 20 MB')
+        uploads=s.setdefault('planUploads',[])
+        existing=plan_upload(s,upload_id)
+        value={'id':upload_id,'projectId':pid,'fileName':filename,'storageBucket':PLAN_BUCKET,'storagePath':p['storagePath'],'mimeType':p['mimeType'],'sizeBytes':size,'status':'Uploaded','generatedDesignIds':[],'createdAt':now,'updatedAt':now,'createdBy':actor}
+        if existing:existing.update({**value,'createdAt':existing.get('createdAt',now),'createdBy':existing.get('createdBy',actor)})
+        else:
+            if len(uploads)>=10:raise ValueError('Maximum ten plan uploads per project')
+            uploads.append(value)
+    elif cmd=='getPlanUpload':
+        upload=plan_upload(s,plan_upload_id(p.get('uploadId')))
+        if not upload:return {'ok':False,'error':{'code':'NOT_FOUND','message':'Plan upload not found'}}
+        return {'ok':True,'version':s['version'],'data':copy.deepcopy(upload)}
+    elif cmd=='startPlanExtraction':
+        upload=plan_upload(s,plan_upload_id(p.get('uploadId')))
+        if not upload:raise ValueError('Plan upload not found')
+        upload['status']='Extracting';upload['updatedAt']=now;upload.pop('error',None);upload.pop('reviewed',None);upload['generatedDesignIds']=[]
+    elif cmd=='savePlanExtractionDraft':
+        upload=plan_upload(s,plan_upload_id(p.get('uploadId')))
+        if not upload:raise ValueError('Plan upload not found')
+        if p.get('serverVerifiedExtraction') is not True:raise ValueError('Server-verified Gemini extraction required')
+        upload['extraction']=plan_extraction_draft(p.get('draft'),upload['id'])
+        upload['status']='Needs Review';upload['updatedAt']=now;upload.pop('error',None);upload.pop('reviewed',None);upload['generatedDesignIds']=[]
+    elif cmd=='markPlanExtractionFailed':
+        upload=plan_upload(s,plan_upload_id(p.get('uploadId')))
+        if not upload:raise ValueError('Plan upload not found')
+        upload['status']='Failed';upload['updatedAt']=now;upload['error']={'code':'PLAN_EXTRACTION_FAILED','message':text(p.get('message'),500)}
+    elif cmd=='saveReviewedPlan':
+        upload=plan_upload(s,plan_upload_id(p.get('uploadId')))
+        if not upload:raise ValueError('Plan upload not found')
+        rooms_raw=p.get('rooms')
+        if not isinstance(rooms_raw,list) or not 1<=len(rooms_raw)<=20:raise ValueError('Review 1 to 20 rooms before generating 3D')
+        default_height=plan_number(p.get('defaultHeightFt',10),6,20,'height')
+        rooms=[reviewed_room(room,default_height) for room in rooms_raw]
+        assumptions=text_array(p.get('assumptions',['Dimensions reviewed from uploaded plan.','Schematic room geometry; openings are not deducted in v1.']),10)
+        upload['reviewed']={'reviewedAt':now,'reviewedBy':actor,'unit':'ft','defaultHeightFt':default_height,'rooms':rooms,'assumptions':assumptions}
+        upload['status']='Ready for 3D';upload['updatedAt']=now;upload.pop('error',None)
+    elif cmd=='generateStudioDesignsFromPlan':
+        upload=plan_upload(s,plan_upload_id(p.get('uploadId')))
+        if not upload or not upload.get('reviewed'):raise ValueError('Review plan dimensions before generating 3D')
+        if upload.get('generatedDesignIds'):
+            return {'ok':True,'version':s['version'],'data':project_view(s,user,cmd in STAFF_COMMANDS)}
+        reviewed=upload['reviewed'];rooms=reviewed.get('rooms') or []
+        entries=s.setdefault('stoneStudioDesigns',[])
+        if len(entries)+len(rooms)>10:raise ValueError('Maximum ten studio designs per project')
+        floor_name=(upload.get('extraction') or {}).get('floorName','Ground Floor')
+        generated=[]
+        for i,room in enumerate(rooms):
+            design=plan_room_design(pid,floor_name,room,i)
+            entries.append({'design':design,'revision':1,'updatedAt':now})
+            generated.append(design['id'])
+        upload['generatedDesignIds']=generated;upload['updatedAt']=now
     elif cmd=='saveStudioDesign':
         raw=p.get('design');entries=s.setdefault('stoneStudioDesigns',[])
         if not isinstance(raw,dict):raise ValueError('Studio design object required')
@@ -977,7 +1146,12 @@ def native_main(params, user_data, sdk_client):
     try:
         if len(json.dumps(params))>524288:raise ValueError('Command exceeds maximum size')
         if params['command']=='listGallery':return {'ok':True,'data':native_gallery(params.get('payload',{}))}
+        if params['command']=='savePlanExtractionDraft':
+            params=copy.deepcopy(params);params['payload']=verified_extraction_payload(params.get('payload',{}),sdk_client)
         if params['command']=='getImageObject':return {'ok':True,'data':native_image_object(params.get('payload',{}),sdk_client.database)}
         return execute(params,user_data,sdk_client.database)
     except (ValueError,TypeError,KeyError) as error:
         return {'ok':False,'error':{'code':'VALIDATION','message':str(error)}}
+
+
+
