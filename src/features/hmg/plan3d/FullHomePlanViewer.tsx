@@ -4,6 +4,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { taruviTokens } from "../../../../themeOptions";
 import type { FullHomeLayout, FullHomeLayoutRoom } from "./fullHomeLayout";
+import type { HmgPlanOpening } from "../types";
 
 const FT_TO_M = 0.3048;
 
@@ -37,7 +38,7 @@ function categoryColor(category: FullHomeLayoutRoom["category"]) {
   }
 }
 
-export function FullHomePlanViewer({ layout, renderCanvas = true }: { layout: FullHomeLayout; renderCanvas?: boolean }) {
+export function FullHomePlanViewer({ layout, assignments = {}, openings = [], renderCanvas = true }: { layout: FullHomeLayout; assignments?: Record<string, { assetId: string }>; openings?: HmgPlanOpening[]; renderCanvas?: boolean }) {
   const host = useRef<HTMLDivElement>(null);
   const [webglUnavailable, setWebglUnavailable] = useState(false);
   const hasRooms = layout.rooms.length > 0;
@@ -192,11 +193,32 @@ export function FullHomePlanViewer({ layout, renderCanvas = true }: { layout: Fu
             {webglUnavailable && <Box role="img" aria-label="Schematic whole-home 3D preview unavailable" sx={{ minHeight: 220, display: "grid", placeItems: "center", bgcolor: taruviTokens.hmg.background, borderRadius: 1, p: 3, textAlign: "center" }}>
               <Typography>3D preview is unavailable on this device. The reviewed room list below is retained.</Typography>
             </Box>}
+            {openings.length > 0 && (
+              <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 1.5 }}>
+                <Typography fontWeight={700}>Extracted openings for review</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                  Doors, windows and ventilators are AI evidence only and are not deducted from stone quantities.
+                </Typography>
+                <Stack direction="row" gap={0.75} flexWrap="wrap">
+                  {openings.map((opening, index) => (
+                    <Chip
+                      key={`${opening.id || opening.label}-${index}`}
+                      variant="outlined"
+                      label={`${opening.label} · ${opening.type}${opening.notes ? ` · ${opening.notes}` : ""}`}
+                    />
+                  ))}
+                </Stack>
+              </Box>
+            )}
             <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))", md: "repeat(4, minmax(0, 1fr))" }, gap: 1 }}>
               {layout.rooms.map((room) => (
                 <Box key={room.id} sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 1 }}>
                   <Typography fontWeight={700}>{room.name}</Typography>
                   <Typography variant="body2" color="text.secondary">{room.lengthFt} × {room.widthFt} ft · {room.areaSqFt.toFixed(1)} sq ft</Typography>
+                  <Stack direction="row" gap={0.5} flexWrap="wrap" sx={{ mt: 1 }}>
+                    {room.includeFloor && <Chip size="small" variant="outlined" color={assignments[`${room.id}:floor`] ? "success" : "default"} label={assignments[`${room.id}:floor`] ? "Floor assigned" : "Floor unassigned"} />}
+                    {room.includeInteriorWalls && <Chip size="small" variant="outlined" color={assignments[`${room.id}:walls`] ? "success" : "default"} label={assignments[`${room.id}:walls`] ? "Walls assigned" : "Walls unassigned"} />}
+                  </Stack>
                 </Box>
               ))}
             </Box>

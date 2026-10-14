@@ -60,7 +60,11 @@ export function QuoteEditor() {
   );
   const p = query.data;
   const quote = p?.quote;
-  const studio = quote?.source?.kind === "studio";
+  const studioSource = quote?.source?.kind === "studio" ? quote.source : undefined;
+  const planSource = quote?.source?.kind === "plan" ? quote.source : undefined;
+  const studio = !!studioSource;
+  const planQuote = !!planSource;
+  const sourceLocked = studio || planQuote;
   const currentSummaries = (p?.studioQuoteSummaries || []).filter(
     (q) =>
       q.lines.some((l) => l.assetId) &&
@@ -150,16 +154,21 @@ export function QuoteEditor() {
           />
         )}
       </Stack>
-      {studio && (
+      {studioSource && (
         <Alert severity="info" sx={{ mb: 2 }}>
-          Studio source: Option {quote.source?.option}, design revision{" "}
-          {quote.source?.designRevision}.{" "}
+          Studio source: Option {studioSource.option}, design revision{" "}
+          {studioSource.designRevision}.{" "}
           <Button
             component={RouterLink}
-            to={`/studio-3d?projectId=${p.id}&designId=${quote.source?.designId}`}
+            to={`/studio-3d?projectId=${p.id}&designId=${studioSource.designId}`}
           >
             Open source design
           </Button>
+        </Alert>
+      )}
+      {planSource && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          Whole-plan quote source: {planSource.items.length} synced generated room{planSource.items.length === 1 ? "" : "s"} from upload {planSource.uploadId}.
         </Alert>
       )}
       {command.error && (
@@ -173,7 +182,7 @@ export function QuoteEditor() {
         refresh={query.refreshValue}
         onRebase={(version) => setBaseVersion(command.rebase(version))}
       />
-      {!studio &&
+      {!sourceLocked &&
         !currentSummaries.length &&
         !p.inquiries.some((i) => i.currentness === "Current") && (
           <Alert severity="warning" sx={{ mb: 3 }}>
@@ -259,15 +268,15 @@ export function QuoteEditor() {
       ) : (
         <>
           <Alert severity="info" sx={{ mb: 3 }}>
-            {studio
-              ? "Official-material studio draft. No rates or costs are inferred. Enter rate, allowance, discount and tax explicitly; blanks remain unknown."
+            {sourceLocked
+              ? "Official-material saved-design draft. No rates or costs are inferred. Enter rate, allowance, discount and tax explicitly; blanks remain unknown."
               : "Fictional demo rates. Blank quantity or rate means unknown, never zero."}{" "}
             No reservation, order or binding acceptance.
           </Alert>
           {quote.currentness !== "Current" && (
             <Alert severity="warning" sx={{ mb: 3 }}>
-              {studio
-                ? "This quote is stale against its saved design. Prepare a current summary in the Studio, then explicitly replace the working draft above; old history is retained and approval resets."
+              {sourceLocked
+                ? "This quote is stale against its saved plan/studio design. Sync the source, then explicitly replace the working draft; old history is retained and approval resets."
                 : "This quote is not current with the selection. Save a new revision before approval or proposal creation."}
             </Alert>
           )}
@@ -277,7 +286,7 @@ export function QuoteEditor() {
                 title="Quantities & pricing"
                 action={
                   <Button
-                    disabled={studio || p.archived || command.busy}
+                    disabled={sourceLocked || p.archived || command.busy}
                     onClick={() => {
                       setLines([...lines, blankLine()]);
                       setDirty(true);
@@ -301,7 +310,7 @@ export function QuoteEditor() {
                         <Typography variant="h3">Line {i + 1}</Typography>
                         <Button
                           color="error"
-                          disabled={studio || p.archived || command.busy}
+                          disabled={sourceLocked || p.archived || command.busy}
                           onClick={() =>
                             setDialog({
                               title: "Remove quote line?",
@@ -356,7 +365,7 @@ export function QuoteEditor() {
                       >
                         <TextField
                           label="Quantity"
-                          disabled={studio || p.archived}
+                          disabled={sourceLocked || p.archived}
                           value={line.quantity}
                           type="number"
                           inputProps={{ min: 0, step: ".01" }}
@@ -367,13 +376,13 @@ export function QuoteEditor() {
                         <TextField
                           select
                           label="Unit"
-                          disabled={studio || p.archived}
+                          disabled={sourceLocked || p.archived}
                           value={line.unit}
                           onChange={(e) =>
                             setLine(line.id, "unit", e.target.value)
                           }
                         >
-                          {(studio ? ["m\u00b2"] : ["sq ft"]).map((v) => (
+                          {(sourceLocked ? ["m\u00b2"] : ["sq ft"]).map((v) => (
                             <MenuItem key={v} value={v}>
                               {v}
                             </MenuItem>
@@ -461,7 +470,7 @@ export function QuoteEditor() {
                   disabled={
                     command.busy ||
                     p.archived ||
-                    (studio
+                    (sourceLocked
                       ? quote.currentness !== "Current"
                       : !p.inquiries.some(
                           (i) => i.currentness === "Current"
@@ -905,7 +914,7 @@ export function PriceApproval() {
         />
       </Stack>
       <Alert severity="info">
-        {quote.source?.kind === "studio" ? "Staff-entered official-material rates" : "Fictional rates"}. Illustrative tax / Demo only. Approval is bound to this saved revision and does not verify application suitability.
+        {quote.source?.kind ? "Staff-entered official-material rates" : "Fictional rates"}. Illustrative tax / Demo only. Approval is bound to this saved revision and does not verify application suitability.
       </Alert>
       {command.error && (
         <Alert severity="error">

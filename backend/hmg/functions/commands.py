@@ -31,8 +31,8 @@ def verified_extraction_payload(payload,sdk_client):
     next_payload=copy.deepcopy(payload);next_payload["draft"]=clean;next_payload["serverVerifiedExtraction"]=True
     return next_payload
 DEMO_TEAM = {'consultant':'f4e9385e-dbcf-45df-81c9-ff3510f7595d','operations':'5b031e5f-1e55-4a89-ba22-85f1b3cde90d','salesHead':'aee9e4b1-e1de-4086-8d26-b0434819c8af'}
-PRICING_COMMANDS = {'getQuote','listQuotes','listQuoteCandidates','createStudioQuoteDraft','createQuoteDraft','saveQuoteRevision','withdrawQuoteDraft','requestPriceApproval','reviewPriceApproval','createProposalSnapshot','previewDemoReset','resetDemoProject'}
-STAFF_COMMANDS = {'getSalesProject','listSalesPipeline','createLead','updateLead','transitionSalesStage','getQuote','listQuotes','listQuoteCandidates','createStudioQuoteDraft','answerQuestion','saveStaffNote','deleteStaffNoteDraft','updateSalesStage','recordCheck','assignTask','createQuoteDraft','saveQuoteRevision','withdrawQuoteDraft','requestPriceApproval','reviewPriceApproval','createProposalSnapshot','markDemoLotUnavailable','overview','previewDemoReset','resetDemoProject'}
+PRICING_COMMANDS = {'getQuote','listQuotes','listQuoteCandidates','createStudioQuoteDraft','createPlanQuoteDraft','createQuoteDraft','saveQuoteRevision','withdrawQuoteDraft','requestPriceApproval','reviewPriceApproval','createProposalSnapshot','previewDemoReset','resetDemoProject'}
+STAFF_COMMANDS = {'getSalesProject','listSalesPipeline','createLead','updateLead','transitionSalesStage','getQuote','listQuotes','listQuoteCandidates','createStudioQuoteDraft','createPlanQuoteDraft','answerQuestion','saveStaffNote','deleteStaffNoteDraft','updateSalesStage','recordCheck','assignTask','createQuoteDraft','saveQuoteRevision','withdrawQuoteDraft','requestPriceApproval','reviewPriceApproval','createProposalSnapshot','markDemoLotUnavailable','overview','previewDemoReset','resetDemoProject'}
 SALES_COMMANDS = {'listSalesPipeline','createLead','updateLead','transitionSalesStage','updateSalesStage'}
 SALES_STAGES = ('Lead','Discovery','Consultation','Verification','Quotation','Proposal','Negotiation','Won','Declined')
 SALES_ACTIVE_STAGES = SALES_STAGES[:-2]
@@ -244,10 +244,25 @@ def studio_source_current(project,source):
     entry=first((x for x in project.get('stoneStudioDesigns',[]) if x['design']['id']==source.get('designId')),None)
     return bool(entry and entry['revision']==source.get('designRevision') and entry['design']['geometryRevision']==source.get('geometryRevision'))
 
+def plan_source_current(project,source):
+    if not isinstance(source,dict) or source.get('kind')!='plan':return False
+    upload=first((x for x in project.get('planUploads',[]) if x.get('id')==source.get('uploadId')),None)
+    items=source.get('items')
+    if not upload or not isinstance(items,list):return False
+    if list(upload.get('generatedDesignIds') or [])!=[x.get('designId') for x in items if isinstance(x,dict)]:return False
+    entries={x['design']['id']:x for x in project.get('stoneStudioDesigns',[]) if isinstance(x.get('design'),dict)}
+    for item in items:
+        if not isinstance(item,dict):return False
+        entry=entries.get(item.get('designId'))
+        if not entry or entry.get('revision')!=item.get('designRevision') or entry['design'].get('geometryRevision')!=item.get('geometryRevision'):return False
+    return True
+
 def quote_current(project,quote):
     if not quote:return False
     source=quote.get('source')
-    return studio_source_current(project,source) if source and source.get('kind')=='studio' else quote['selectionVersion']==project['selectionVersion']
+    if source and source.get('kind')=='studio':return studio_source_current(project,source)
+    if source and source.get('kind')=='plan':return plan_source_current(project,source)
+    return quote['selectionVersion']==project['selectionVersion']
 
 def studio_candidates(project):
     seen=set();result=[]
@@ -392,12 +407,46 @@ def plan_extraction_draft(raw,upload_id):
     if source!=upload_id:raise ValueError('Extraction upload mismatch')
     return {'sourceUploadId':upload_id,'model':optional_text(raw.get('model',''),120),'generatedAt':optional_text(raw.get('generatedAt',''),40),'buildingFacing':facing,'builtUpAreaSqFt':area,'floorName':optional_text(raw.get('floorName','Ground Floor'),120) or 'Ground Floor','rooms':[extracted_room(room) for room in rooms_raw],'openings':[extracted_opening(opening,i) for i,opening in enumerate(openings_raw)],'warnings':text_array(raw.get('warnings',[]),20),'rawTextPreview':optional_text(raw.get('rawTextPreview',''),2000)}
 
-def plan_room_design(project_id,floor_name,room,index):
+
+def plan_assignment(raw,texture_ids):
+    if not isinstance(raw,dict):raise ValueError('Invalid plan material assignment')
+    allowed={'assetId','rotation','mode','widthM','heightM','groutMm','groutColor','dimensionsAssumed'}
+    if set(raw)!=allowed:raise ValueError('Invalid plan material assignment')
+    if raw.get('assetId') not in texture_ids:raise ValueError('Choose an eligible HMG surface material')
+    if raw.get('rotation') not in (0,90) or raw.get('mode')!='surface':raise ValueError('Plan material assignments must use whole-surface preview mode')
+    if raw.get('dimensionsAssumed') is not True or raw.get('groutMm')!=0:raise ValueError('Plan material assumptions must be acknowledged')
+    if not isinstance(raw.get('groutColor'),str) or not re.fullmatch(r'#[0-9a-fA-F]{6}',raw['groutColor']):raise ValueError('Invalid plan grout colour')
+    return {'assetId':raw['assetId'],'rotation':raw['rotation'],'mode':'surface','widthM':1,'heightM':1,'groutMm':0,'groutColor':raw['groutColor'],'dimensionsAssumed':True}
+
+def reviewed_plan_assignments(raw,rooms,texture_ids):
+    if raw in (None,''):return {}
+    if not isinstance(raw,dict) or len(raw)>40:raise ValueError('Invalid plan material assignment set')
+    valid={room['id']+':floor' for room in rooms if room.get('includeFloor')}|{room['id']+':walls' for room in rooms if room.get('includeInteriorWalls')}
+    result={}
+    for key,value in raw.items():
+        if key not in valid:raise ValueError('Plan material target does not match a reviewed room surface')
+        result[key]=plan_assignment(value,texture_ids)
+    return result
+
+def assignment_for_surface(assignment,width,height):
+    return {**copy.deepcopy(assignment),'widthM':width,'heightM':height,'groutMm':0,'dimensionsAssumed':True}
+
+def plan_room_design(project_id,floor_name,room,index,assignments=None,design_id=None,texture_ids=None):
     length=round(room['lengthFt']*0.3048,4);width=round(room['widthFt']*0.3048,4);height=round(room['heightFt']*0.3048,4)
     rid=('plan-'+re.sub(r'[^a-zA-Z0-9_-]+','-',room['id']).strip('-')+'-'+str(index+1))[:80]
     walls=[rid+':'+x for x in ['north','east','south','west']]
-    design={'schemaVersion':1,'id':str(uuid.uuid4()),'projectId':project_id,'name':text((floor_name+' - '+room['name'])[:120],120),'geometryRevision':1,'room':{'id':rid,'name':room['name'],'length':length,'width':width,'height':height,'unit':'m','cornerIds':[rid+':'+x for x in ['nw','ne','se','sw']],'wallIds':walls,'wallSideIds':[x+':interior' for x in walls]},'activeOption':'A','options':{'A':{'assignments':{}},'B':{'assignments':{}}},'camera':{'position':[round(length*1.3,4),6,round(width*1.5,4)],'target':[round(length/2,4),1,round(width/2,4)]},'objects':[]}
-    return validate_studio(design,project_id)
+    room_data={'id':rid,'name':room['name'],'length':length,'width':width,'height':height,'unit':'m','cornerIds':[rid+':'+x for x in ['nw','ne','se','sw']],'wallIds':walls,'wallSideIds':[x+':interior' for x in walls]}
+    option_assignments={}
+    plan_assignments=assignments or {}
+    floor_assignment=plan_assignments.get(room['id']+':floor')
+    if floor_assignment and room.get('includeFloor'):
+        option_assignments[rid+':floor']=assignment_for_surface(floor_assignment,length,width)
+    wall_assignment=plan_assignments.get(room['id']+':walls')
+    if wall_assignment and room.get('includeInteriorWalls'):
+        for i,wall_id in enumerate(room_data['wallSideIds']):
+            option_assignments[wall_id]=assignment_for_surface(wall_assignment,length if i%2==0 else width,height)
+    design={'schemaVersion':1,'id':design_id or str(uuid.uuid4()),'projectId':project_id,'name':text((floor_name+' - '+room['name'])[:120],120),'geometryRevision':1,'room':room_data,'activeOption':'A','options':{'A':{'assignments':option_assignments},'B':{'assignments':{}}},'camera':{'position':[round(length*1.3,4),6,round(width*1.5,4)],'target':[round(length/2,4),1,round(width/2,4)]},'objects':[]}
+    return validate_studio(design,project_id,None,texture_ids)
 
 def blank(pid,name,owner,brief):
     return {'id':pid,'name':name,'ownerId':owner,'participants':[owner]+list(DEMO_TEAM.values()),'assignedConsultantId':DEMO_TEAM['consultant'],'operationsId':DEMO_TEAM['operations'],'salesHeadId':DEMO_TEAM['salesHead'],'isDemo':True,'version':0,'selectionVersion':1,'stage':'Discovery','archived':False,'brief':{'room':'Living room feature wall','application':'Feature wall','quantity':'','unit':'sq ft','priorities':[],'requirements':'Application suitability requires verification',**validate_brief(brief)},'shortlist':[],'preferredOptionId':None,'rejected':{},'questions':[],'concepts':[],'timeline':[],'inquiries':[],'proposals':[],'unavailable':[],'notes':[],'checks':[],'tasks':[],'quote':None,'quoteHistory':[]}
@@ -600,6 +649,31 @@ def studio_summary(entry,option,now):
         assignment=design['options'][option]['assignments'].get(sid)
         lines.append({'surfaceId':sid,'name':name,'areaM2':money(area),'assetId':assignment['assetId'] if assignment else None,'assignment':copy.deepcopy(assignment)})
     return {'id':str(uuid.uuid4()),'projectId':design['projectId'],'room':{k:r[k] for k in ['name','length','width','height','unit']},'designId':design['id'],'designRevision':entry['revision'],'geometryRevision':design['geometryRevision'],'option':option,'at':now,'status':'Unpriced preliminary summary','lines':lines,'totalAreaM2':money(sum(x[2] for x in surfaces)),'assumptions':['Preliminary polygon room coverage estimate in square metres.' if design['schemaVersion']==2 else 'Preliminary rectangular room coverage estimate in square metres.','User-entered dimensions are assumptions, not measurements or product specifications.','Unassigned surfaces have no selected material.']+(['Whole-surface images are stretched visual approximations; image dimensions do not represent physical slab sizes or measured texture scale.'] if any(x['assignment'] and x['assignment']['mode']=='surface' for x in lines) else []),'exclusions':['Fabrication, cutting, unmodeled openings, wastage, installation, availability, tax and pricing are excluded.','This summary is not a quotation, order or technical approval.']}
+
+def plan_quote_draft_source_and_lines(project,upload_id,materials,now):
+    upload=plan_upload(project,plan_upload_id(upload_id))
+    if not upload or not upload.get('reviewed') or not upload.get('generatedDesignIds'):
+        raise ValueError('Generate synced 3D rooms before creating a whole-plan quote')
+    entries={entry['design']['id']:entry for entry in project.get('stoneStudioDesigns',[]) if isinstance(entry.get('design'),dict)}
+    source_items=[];groups={}
+    for design_id in upload.get('generatedDesignIds',[]):
+        entry=entries.get(design_id)
+        if not entry:raise ValueError('Generated room design is unavailable; sync the plan again')
+        summary=studio_summary(entry,'A',now)
+        source_items.append({'designId':design_id,'designRevision':entry['revision'],'geometryRevision':entry['design']['geometryRevision']})
+        for line in summary['lines']:
+            asset_id=line.get('assetId')
+            if not asset_id:continue
+            if asset_id not in materials or not materials[asset_id].get('surfaceEligible'):raise ValueError('A selected material is no longer eligible; review whole-plan assignments')
+            group=groups.setdefault(asset_id,{'assetId':asset_id,'area':Decimal('0'),'surfaceCount':0})
+            group['area']+=Decimal(str(line['areaM2']))
+            group['surfaceCount']+=1
+    if not groups:raise ValueError('Assign an approved stone to at least one whole-plan surface first')
+    lines=[]
+    for asset_id,group in sorted(groups.items(),key=lambda item:materials[item[0]]['title']):
+        material=materials[asset_id]
+        lines.append({'id':'plan-'+asset_id,'description':'Whole plan - '+material['title']+' ('+str(group['surfaceCount'])+' surfaces)','quantity':money(group['area']),'unit':'m\u00b2','allowancePct':'','rate':'','discountPct':'','taxPct':'','currency':'INR','source':{'assetId':asset_id,'surfaceId':'plan:'+upload['id']+':'+asset_id,'title':material['title'],'sourcePageUrl':material['sourcePageUrl']}})
+    return {'kind':'plan','uploadId':upload['id'],'items':source_items},lines
 
 def execute(params,user,db):
     if not user or not user.get('id') or user.get('is_active') is not True or user.get('is_deleted'): return {'ok':False,'error':{'code':'UNAUTHENTICATED','message':'Sign in required'}}
@@ -813,24 +887,38 @@ def execute(params,user,db):
         if not isinstance(rooms_raw,list) or not 1<=len(rooms_raw)<=20:raise ValueError('Review 1 to 20 rooms before generating 3D')
         default_height=plan_number(p.get('defaultHeightFt',10),6,20,'height')
         rooms=[reviewed_room(room,default_height) for room in rooms_raw]
+        texture_ids={x['id'] for x in stone_materials(db) if x.get('surfaceEligible') is True and x.get('allowedUse')=='surface'}
+        assignments=reviewed_plan_assignments(p.get('assignments'),rooms,texture_ids)
         assumptions=text_array(p.get('assumptions',['Dimensions reviewed from uploaded plan.','Schematic room geometry; openings are not deducted in v1.']),10)
-        upload['reviewed']={'reviewedAt':now,'reviewedBy':actor,'unit':'ft','defaultHeightFt':default_height,'rooms':rooms,'assumptions':assumptions}
+        upload['reviewed']={'reviewedAt':now,'reviewedBy':actor,'unit':'ft','defaultHeightFt':default_height,'rooms':rooms,'assumptions':assumptions,'assignments':assignments}
         upload['status']='Ready for 3D';upload['updatedAt']=now;upload.pop('error',None)
     elif cmd=='generateStudioDesignsFromPlan':
         upload=plan_upload(s,plan_upload_id(p.get('uploadId')))
         if not upload or not upload.get('reviewed'):raise ValueError('Review plan dimensions before generating 3D')
-        if upload.get('generatedDesignIds'):
-            return {'ok':True,'version':s['version'],'data':project_view(s,user,cmd in STAFF_COMMANDS)}
         reviewed=upload['reviewed'];rooms=reviewed.get('rooms') or []
         entries=s.setdefault('stoneStudioDesigns',[])
-        if len(entries)+len(rooms)>10:raise ValueError('Maximum ten studio designs per project')
+        existing_ids=list(upload.get('generatedDesignIds') or [])
+        existing_entries={entry['design']['id']:entry for entry in entries if entry.get('design',{}).get('id') in existing_ids}
+        new_count=sum(1 for i in range(len(rooms)) if i>=len(existing_ids) or existing_ids[i] not in existing_entries)
+        if len(entries)+new_count>10:raise ValueError('Maximum ten studio designs per project')
         floor_name=(upload.get('extraction') or {}).get('floorName','Ground Floor')
-        generated=[]
+        generated=[];changed=False
+        assignments=reviewed.get('assignments') or {}
+        texture_ids={x['id'] for x in stone_materials(db) if x.get('surfaceEligible') is True and x.get('allowedUse')=='surface'}
         for i,room in enumerate(rooms):
-            design=plan_room_design(pid,floor_name,room,i)
-            entries.append({'design':design,'revision':1,'updatedAt':now})
+            current_id=existing_ids[i] if i<len(existing_ids) else None
+            entry=existing_entries.get(current_id) if current_id else None
+            design=plan_room_design(pid,floor_name,room,i,assignments,current_id if entry else None,texture_ids)
+            if entry:
+                if json.dumps(entry['design'],sort_keys=True,separators=(',',':'))!=json.dumps(design,sort_keys=True,separators=(',',':')):
+                    entry.update({'design':design,'revision':entry['revision']+1,'updatedAt':now});changed=True
+            else:
+                entries.append({'design':design,'revision':1,'updatedAt':now});changed=True
             generated.append(design['id'])
+        if upload.get('generatedDesignIds')!=generated:changed=True
         upload['generatedDesignIds']=generated;upload['updatedAt']=now
+        if not changed:
+            return {'ok':True,'version':s['version'],'data':project_view(s,user,cmd in STAFF_COMMANDS)}
     elif cmd=='saveStudioDesign':
         raw=p.get('design');entries=s.setdefault('stoneStudioDesigns',[])
         if not isinstance(raw,dict):raise ValueError('Studio design object required')
@@ -984,7 +1072,7 @@ def execute(params,user,db):
         if (retained.get('approval') or {}).get('status')=='Pending':
             retained['approval'].update({'status':'Withdrawn','withdrawnAt':now,'withdrawnBy':actor})
         s['quoteHistory'].append(retained);s['quote']=None
-    elif cmd in ('createQuoteDraft','createStudioQuoteDraft','saveQuoteRevision'):
+    elif cmd in ('createQuoteDraft','createStudioQuoteDraft','createPlanQuoteDraft','saveQuoteRevision'):
         require_open_sales_project(s)
         if sales_project(s) and (not c['canSales'] or s.get('stage') not in ('Verification','Quotation','Proposal','Negotiation')):
             raise ValueError('Reach Verification before creating a sales quote')
@@ -999,7 +1087,11 @@ def execute(params,user,db):
             if any(x['assetId'] not in materials or not materials[x['assetId']].get('surfaceEligible') for x in assigned):raise ValueError('A selected material is no longer an eligible preview; review the design')
             source={'kind':'studio',**{k:summary[k] for k in ['designId','designRevision','geometryRevision','option']},'summaryId':summary['id']}
             raw_lines=[{'id':x['surfaceId'],'description':x['name']+' - '+materials[x['assetId']]['title'],'quantity':x['areaM2'],'unit':'m\u00b2','allowancePct':'','rate':'','discountPct':'','taxPct':'','currency':'INR','source':{'assetId':x['assetId'],'surfaceId':x['surfaceId'],'title':materials[x['assetId']]['title'],'sourcePageUrl':materials[x['assetId']]['sourcePageUrl']}} for x in assigned]
-        elif source and source.get('kind')=='studio':
+        elif cmd=='createPlanQuoteDraft':
+            if previous and p.get('replaceExisting') is not True:raise ValueError('Explicit confirmation required to replace current quote; history will be retained')
+            materials={x['id']:x for x in stone_materials(db)}
+            source,raw_lines=plan_quote_draft_source_and_lines(s,p.get('uploadId'),materials,now)
+        elif source and source.get('kind') in ('studio','plan'):
             if not quote_current(s,previous):raise ValueError('Refresh quote from a current saved design summary before pricing')
             raw_lines=p.get('lines')
         else:
@@ -1013,11 +1105,11 @@ def execute(params,user,db):
         for line in lines:line['id']=text(line.get('id'),100)
         if len(set(line['id'] for line in lines))!=len(lines):raise ValueError('Quote line IDs must be unique')
         if source:
-            originals={x['id']:x for x in (raw_lines if cmd=='createStudioQuoteDraft' else previous['lines'])}
-            if set(originals)!={x['id'] for x in lines}:raise ValueError('Studio source surfaces must be retained; update the saved design to change them')
+            originals={x['id']:x for x in (raw_lines if cmd in ('createStudioQuoteDraft','createPlanQuoteDraft') else previous['lines'])}
+            if set(originals)!={x['id'] for x in lines}:raise ValueError('Saved design source surfaces must be retained; update the saved design to change them')
             for line in lines:
                 original=originals[line['id']]
-                if line['quantity']!=original['quantity'] or line['unit']!='m\u00b2':raise ValueError('Studio coverage comes from the saved design; use allowance for pricing adjustments')
+                if line['quantity']!=original['quantity'] or line['unit']!='m\u00b2':raise ValueError('Saved design coverage comes from the plan/studio source; use allowance for pricing adjustments')
                 line['source']=copy.deepcopy(original['source'])
         totals=calculate(lines);q={'id':pid,'projectId':pid,'revision':max([x['revision'] for x in s['quoteHistory']]+([previous['revision']] if previous else [0]))+1,'selectionVersion':s['selectionVersion'],'lines':lines,'totals':totals,'pricingStatus':'Draft','currentness':'Current','assumptions':text_array(p.get('assumptions',['Consultant-entered pricing is not an official HMG published price; saved design areas are unverified estimates.'] if source else ['Fictional rates; final quantities and suitability unverified'])),'exclusions':text_array(p.get('exclusions',['Installation, transport, final measurement and fabrication not established']))}
         if source:q['source']=copy.deepcopy(source)

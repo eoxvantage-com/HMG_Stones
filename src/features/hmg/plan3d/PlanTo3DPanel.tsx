@@ -17,10 +17,15 @@ import UploadFileRoundedIcon from "@mui/icons-material/UploadFileRounded";
 import AutoAwesomeRoundedIcon from "@mui/icons-material/AutoAwesomeRounded";
 import ViewInArRoundedIcon from "@mui/icons-material/ViewInArRounded";
 import type { HmgProject, HmgReviewedPlanRoom } from "../types";
+import type { GalleryReference } from "../design/galleryReferences";
+import type { StudioAssignment } from "../studio3d/types";
 import { Panel, EmptyState } from "../components/common";
 import { extractPlanDimensions, isSupportedPlanFile, uploadPlanFile } from "./client";
 import { createFullHomeLayout } from "./fullHomeLayout";
 import { FullHomePlanViewer } from "./FullHomePlanViewer";
+import { GalleryBrowser } from "../components/GalleryBrowser";
+import { parseAssignmentSettings } from "../studio3d/materialAssignments";
+import { taruviTokens } from "../../../../themeOptions";
 import {
   areReviewRoomsValid,
   numberInputValue,
@@ -47,18 +52,23 @@ export function PlanTo3DPanel({ project, command, refresh }: { project: HmgProje
   const [rooms, setRooms] = useState<ReviewRoomDraft[]>([]);
   const [height, setHeight] = useState(10);
   const [aiConsent, setAiConsent] = useState(false);
+  const [assignments, setAssignments] = useState<Record<string, StudioAssignment>>({});
+  const [selectedTarget, setSelectedTarget] = useState<string>("");
   const busy = working || command.busy;
 
   useEffect(() => {
     setRooms(reviewRoomsForUpload(latest));
     setHeight(latest?.reviewed?.defaultHeightFt || 10);
     setAiConsent(false);
+    setAssignments(latest?.reviewed?.assignments || {});
+    setSelectedTarget("");
   }, [latest?.id, latest?.status, project.version]);
 
   const readyToReview = !!latest?.extraction?.rooms?.length || rooms.length > 0;
   const reviewMessage = reviewRoomsValidationMessage(rooms);
   const latestReviewedIsValid = !!latest?.reviewed?.rooms?.length && areReviewRoomsValid(latest.reviewed.rooms);
-  const readyToGenerate = latestReviewedIsValid && !latest?.generatedDesignIds?.length;
+  const readyToGenerate = latestReviewedIsValid;
+  const readyToQuotePlan = !!latest?.generatedDesignIds?.length;
   const generatedRoomLinks = (latest?.generatedDesignIds || []).map((designId, index) => ({
     designId,
     name: latest?.reviewed?.rooms?.[index]?.name || rooms[index]?.name || `Room ${index + 1}`,
@@ -71,6 +81,7 @@ export function PlanTo3DPanel({ project, command, refresh }: { project: HmgProje
   const extractionDisabled = busy || project.archived || !aiConsent;
   const roomCount = rooms.length;
   const extractedSummary = useMemo(() => latest?.extraction?.rooms?.map((r) => `${r.label}: ${r.lengthFt ?? "?"} x ${r.widthFt ?? "?"} ft`).join("; "), [latest]);
+  const selectedAssignment = selectedTarget ? assignments[selectedTarget] : undefined;
 
   const run = async (action: () => Promise<unknown>) => {
     setWorking(true); setError("");
@@ -97,8 +108,40 @@ export function PlanTo3DPanel({ project, command, refresh }: { project: HmgProje
     } finally { setWorking(false); }
   };
 
+  const targetLabel = (target: string) => {
+    const [roomId, surface] = target.split(":");
+    const room = rooms.find((item) => item.id === roomId);
+    return room ? `${room.name} ${surface === "walls" ? "interior walls" : "floor"}` : "selected surface";
+  };
+
+  const validAssignmentTargets = (items = rooms) => new Set(items.flatMap((room) => [
+    ...(room.includeFloor ? [`${room.id}:floor`] : []),
+    ...(room.includeInteriorWalls ? [`${room.id}:walls`] : []),
+  ]));
+
+  const filteredAssignments = () => {
+    const valid = validAssignmentTargets();
+    return Object.fromEntries(Object.entries(assignments).filter(([key]) => valid.has(key)));
+  };
+
+  const selectPlanMaterial = (ref: GalleryReference) => {
+    if (!selectedTarget) { setError("Select a reviewed room floor or wall target first."); return; }
+    if (!ref.surfaceEligible) { setError("Select an HMG stone that is eligible for surface preview."); return; }
+    try {
+      const assignment = parseAssignmentSettings(ref.id, { mode: "surface", rotation: 0, width: "", height: "", grout: "0", color: taruviTokens.hmg.border });
+      setAssignments((items) => ({ ...items, [selectedTarget]: assignment }));
+      setError("");
+    } catch (e) { setError(e instanceof Error ? e.message : "Material assignment failed."); }
+  };
+
   const updateRoom = (index: number, patch: Partial<ReviewRoomDraft>) => {
-    setRooms((items) => items.map((item, i) => i === index ? { ...item, ...patch } : item));
+    setRooms((items) => {
+      const next = items.map((item, i) => i === index ? { ...item, ...patch } : item);
+      const valid = validAssignmentTargets(next);
+      setAssignments((current) => Object.fromEntries(Object.entries(current).filter(([key]) => valid.has(key))));
+      if (selectedTarget && !valid.has(selectedTarget)) setSelectedTarget("");
+      return next;
+    });
   };
 
   const updateDefaultHeight = (value: string) => {
@@ -113,6 +156,7 @@ export function PlanTo3DPanel({ project, command, refresh }: { project: HmgProje
       uploadId: latest.id,
       defaultHeightFt: height,
       rooms: reviewRowsToPayload(rooms) as HmgReviewedPlanRoom[],
+      assignments: filteredAssignments(),
     });
   };
 
@@ -182,12 +226,32 @@ export function PlanTo3DPanel({ project, command, refresh }: { project: HmgProje
                 </TextField>
                 <FormControlLabel control={<Checkbox checked={room.includeFloor} onChange={(e) => updateRoom(index, { includeFloor: e.target.checked })} />} label="Floor" />
                 <FormControlLabel control={<Checkbox checked={room.includeInteriorWalls} onChange={(e) => updateRoom(index, { includeInteriorWalls: e.target.checked })} />} label="Interior walls" />
+                <Stack direction="row" gap={1} flexWrap="wrap" sx={{ gridColumn: { md: "1 / -1" } }}>
+                  <Button size="small" variant={selectedTarget === `${room.id}:floor` ? "contained" : "outlined"} disabled={!room.includeFloor} onClick={() => setSelectedTarget(`${room.id}:floor`)}>
+                    Select {room.name} floor{assignments[`${room.id}:floor`] ? " (assigned)" : ""}
+                  </Button>
+                  <Button size="small" variant={selectedTarget === `${room.id}:walls` ? "contained" : "outlined"} disabled={!room.includeInteriorWalls} onClick={() => setSelectedTarget(`${room.id}:walls`)}>
+                    Select {room.name} walls{assignments[`${room.id}:walls`] ? " (assigned)" : ""}
+                  </Button>
+                </Stack>
               </Box>
             ))}
-            {fullHomeLayout && <FullHomePlanViewer layout={fullHomeLayout} />}
+            <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 2 }}>
+              <Stack spacing={1.5}>
+                <Typography variant="h3">Whole-plan stone assignment</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Select each reviewed room floor or wall group, choose an HMG surface-eligible stone, then save and sync the generated 3D rooms. The assignments are applied across the entire uploaded plan workflow.
+                </Typography>
+                <Alert severity={selectedTarget ? "info" : "warning"}>
+                  {selectedTarget ? `Selected target: ${targetLabel(selectedTarget)}${selectedAssignment ? ` - assigned ${selectedAssignment.assetId}` : " - no stone assigned yet"}` : "Choose a room floor or wall target above before selecting a material."}
+                </Alert>
+                <GalleryBrowser mode="materials" compact selectedId={selectedAssignment?.assetId} onSelect={selectPlanMaterial} />
+              </Stack>
+            </Box>
+            {fullHomeLayout && <FullHomePlanViewer layout={fullHomeLayout} assignments={assignments} openings={latest?.extraction?.openings || []} />}
             {generatedRoomLinks.length > 0 && (
               <Alert severity="info">
-                Generated Studio links open one reviewed room at a time for stone assignment and quote creation. Use the whole-home preview above to check the combined plan layout.
+                Generated Studio links open one reviewed room at a time for detailed 3D review. Whole-plan stone assignments saved here are synced into every generated room.
               </Alert>
             )}
             {generatedRoomLinks.length > 0 && (
@@ -201,7 +265,8 @@ export function PlanTo3DPanel({ project, command, refresh }: { project: HmgProje
             )}
             <Stack direction="row" gap={1} flexWrap="wrap">
               <Button variant="contained" disabled={busy || !rooms.length || !!reviewMessage || project.archived} onClick={() => run(saveReviewed)}>Save reviewed plan</Button>
-              <Button variant="outlined" disabled={busy || !readyToGenerate || project.archived} onClick={() => latest && run(() => command.run("generateStudioDesignsFromPlan", { uploadId: latest.id }))}>Generate 3D rooms</Button>
+              <Button variant="outlined" disabled={busy || !readyToGenerate || project.archived} onClick={() => latest && run(() => command.run("generateStudioDesignsFromPlan", { uploadId: latest.id }))}>Generate / sync 3D rooms</Button>
+              <Button variant="outlined" disabled={busy || !readyToQuotePlan || project.archived} onClick={() => latest && run(() => command.run("createPlanQuoteDraft", { uploadId: latest.id, replaceExisting: true }))}>Create whole-plan quote draft</Button>
             </Stack>
           </Stack>
         )}
