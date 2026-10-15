@@ -1,0 +1,256 @@
+name: Cloudflare Deploy - Core
+
+on:
+  workflow_call:
+    inputs:
+      project_name:
+        description: 'Project folder name or Cloudflare project name'
+        required: true
+        type: string
+      cloudflare_project_name:
+        description: 'Cloudflare project name (if different from project_name)'
+        required: false
+        type: string
+      project_type:
+        description: 'pages or workers'
+        required: true
+        type: string
+      environment:
+        description: 'production or staging'
+        required: true
+        type: string
+      custom_domain:
+        description: 'Custom domain (optional)'
+        required: false
+        type: string
+      repository:
+        description: 'Repository (org/repo format, defaults to current)'
+        required: false
+        type: string
+      branch:
+        description: 'Branch to deploy from (for external repos)'
+        required: false
+        type: string
+        default: 'main'
+      build_directory:
+        description: 'Build output directory (default: build)'
+        required: false
+        type: string
+        default: 'build'
+      skip_build:
+        description: 'Skip build step and use existing dist folder from repo'
+        required: false
+        type: boolean
+        default: false
+      infisical_project_slug:
+        description: 'Infisical project slug for secrets'
+        required: false
+        type: string
+      infisical_env_slug:
+        description: 'Infisical environment slug for secrets'
+        required: false
+        type: string
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+      CLOUDFLARE_ACCOUNT_ID:
+        required: true
+      INFISICAL_CLIENT_ID:
+        required: false
+      INFISICAL_CLIENT_SECRET:
+        required: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy ${{ inputs.cloudflare_project_name || inputs.project_name }} (${{ inputs.branch }})
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository || github.repository }}
+          ref: ${{ inputs.branch || github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📋 Deployment Configuration
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚀 Starting Cloudflare Deployment"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📦 Project: ${{ inputs.cloudflare_project_name || inputs.project_name }}"
+          echo "🌿 Branch: ${{ inputs.branch }}"
+          echo "🏷️  Environment: ${{ inputs.environment }}"
+          echo "📂 Repository: ${{ inputs.repository || 'current' }}"
+          echo "🔨 Build: ${{ inputs.skip_build && 'SKIPPED (using pre-built)' || 'ENABLED' }}"
+          echo "📁 Build Dir: ${{ inputs.build_directory }}"
+          echo "🌐 Type: ${{ inputs.project_type }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      - name: Determine project path
+        id: path
+        run: |
+          echo "DEBUG: repository=${{ inputs.repository }}"
+          echo "DEBUG: project_name=${{ inputs.project_name }}"
+
+          if [ -n "${{ inputs.repository }}" ]; then
+            if [ "${{ inputs.project_name }}" = "." ] || [ -z "${{ inputs.project_name }}" ]; then
+              echo "project_path=." >> $GITHUB_OUTPUT
+            else
+              echo "project_path=${{ inputs.project_name }}" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "project_path=.cloudflare/projects/${{ inputs.project_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Node.js
+        if: ${{ !inputs.skip_build }}
+        id: setup-node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: ${{ steps.path.outputs.project_path }}/package-lock.json
+
+      - name: 🐞 Debug cache status
+        if: ${{ !inputs.skip_build }}
+        run: |
+          if [ "${{ steps.setup-node.outputs.cache-hit }}" = "true" ]; then
+            echo "✅ npm cache hit - using cached dependencies"
+          else
+            echo "📥 npm cache miss - downloading dependencies"
+          fi
+
+      - name: 🔐 Fetch secrets from Infisical
+        if: ${{ !inputs.skip_build && inputs.infisical_project_slug != '' && inputs.infisical_env_slug != '' }}
+        continue-on-error: true
+        uses: Infisical/secrets-action@v1.0.11
+        with:
+          client-id: ${{ secrets.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          env-slug: ${{ inputs.infisical_env_slug }}
+          project-slug: ${{ inputs.infisical_project_slug }}
+          domain: "https://environment.eoxvantage.com"
+          secret-path: "/"
+          recursive: true
+
+      - name: Create .env from GitHub environment
+        if: ${{ !inputs.skip_build }}
+        run: |
+          cd ${{ steps.path.outputs.project_path }}
+          touch .env
+
+          # Export all environment variables to .env
+          env | grep -E '^VITE_|^REACT_APP_|^NEXT_PUBLIC_' > .env || true
+
+          echo "✅ .env file created"
+          if [ -s .env ]; then
+            echo "📝 Environment variables found:"
+            cat .env | cut -d'=' -f1
+          else
+            echo "⚠️  No VITE_/REACT_APP_/NEXT_PUBLIC_ variables found, using empty .env"
+          fi
+
+      - name: 📦 Install dependencies
+        if: ${{ !inputs.skip_build }}
+        run: |
+          echo "📥 Installing npm packages..."
+          cd ${{ steps.path.outputs.project_path }}
+          if [ -f "package-lock.json" ]; then
+            npm ci || npm install
+          else
+            npm install
+          fi
+          echo "✅ Dependencies installed"
+
+      - name: 🔨 Build project
+        if: ${{ !inputs.skip_build }}
+        run: |
+          echo "🔨 Building project..."
+          echo "Working directory: ${{ steps.path.outputs.project_path }}"
+          cd ${{ steps.path.outputs.project_path }}
+          npm run build
+          echo "✅ Build completed successfully"
+        env:
+          NODE_ENV: production
+          NODE_OPTIONS: --max-old-space-size=4096
+
+      - name: 📂 Verify build output
+        run: |
+          echo "🔍 Checking build directory..."
+          BUILD_PATH="${{ steps.path.outputs.project_path }}/${{ inputs.build_directory }}"
+          if [ ! -d "$BUILD_PATH" ]; then
+            echo "❌ Build directory not found: $BUILD_PATH"
+            exit 1
+          fi
+          FILE_COUNT=$(find "$BUILD_PATH" -type f | wc -l)
+          TOTAL_SIZE=$(du -sh "$BUILD_PATH" | cut -f1)
+          echo "✅ Build directory verified"
+          echo "   Path: $BUILD_PATH"
+          echo "   Files: $FILE_COUNT"
+          echo "   Size: $TOTAL_SIZE"
+
+      - name: Create Cloudflare Pages project if not exists
+        if: inputs.project_type == 'pages'
+        continue-on-error: true
+        run: |
+          curl -X POST "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/pages/projects" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"name":"${{ inputs.cloudflare_project_name || inputs.project_name }}","production_branch":"${{ inputs.branch }}"}'
+
+      - name: Deploy to Cloudflare Pages
+        if: inputs.project_type == 'pages'
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: ${{ inputs.cloudflare_project_name || inputs.project_name }}
+          directory: ${{ steps.path.outputs.project_path }}/${{ inputs.build_directory }}
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          wranglerVersion: '3'
+
+      - name: Deploy to Cloudflare Workers
+        if: inputs.project_type == 'workers'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: ${{ steps.path.outputs.project_path }}
+          command: deploy
+
+      - name: ✅ Deployment Summary
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ DEPLOYMENT SUCCESSFUL"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "📋 Deployment Details:"
+          echo "   Project: ${{ inputs.cloudflare_project_name || inputs.project_name }}"
+          echo "   Repository: ${{ inputs.repository || github.repository }}"
+          echo "   Branch: ${{ inputs.branch }}"
+          echo "   Environment: ${{ inputs.environment }}"
+          echo "   Type: ${{ inputs.project_type }}"
+          echo "   Build: ${{ inputs.skip_build && 'Skipped (pre-built)' || 'Completed' }}"
+          echo "   Build Directory: ${{ inputs.build_directory }}"
+          echo ""
+          echo "🔗 Access URLs:"
+          if [ -n "${{ inputs.custom_domain }}" ]; then
+            echo "   🌐 Custom Domain: https://${{ inputs.custom_domain }}"
+            echo "   ⚠️  Configure custom domain manually in Cloudflare dashboard: Settings → Custom domains"
+          fi
+          if [ "${{ inputs.project_type }}" = "pages" ]; then
+            echo "   ☁️  Cloudflare Pages: https://${{ inputs.cloudflare_project_name || inputs.project_name }}.pages.dev"
+          else
+            echo "   ⚡ Cloudflare Workers: https://${{ inputs.cloudflare_project_name || inputs.project_name }}.workers.dev"
+          fi
+          echo ""
+          echo "📝 Next Steps:"
+          if [ -n "${{ inputs.custom_domain }}" ]; then
+            echo "   ⚠️  Add custom domain in Cloudflare dashboard: Settings → Custom domains"
+          fi
+          echo "   - Redeploy different branch: Change 'branch' input"
+          echo "   - Skip build: Check 'skip_build' option"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

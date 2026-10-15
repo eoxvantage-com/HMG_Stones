@@ -1,0 +1,113 @@
+name: Setup External Repo CI/CD
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'External repo (org/repo, e.g., Taruvi-ai/taruvi-desk)'
+        required: true
+        type: string
+      branch:
+        description: 'Branch to watch for auto-deploy'
+        required: true
+        type: string
+      project_name:
+        description: 'Cloudflare project name'
+        required: true
+        type: string
+      project_type:
+        description: 'Type of project'
+        required: true
+        type: choice
+        options:
+          - pages
+          - workers
+      custom_domain:
+        description: 'Custom domain (e.g., desk.taruvi.space)'
+        required: false
+        type: string
+      build_directory:
+        description: 'Build output directory (dist, build, out)'
+        required: false
+        type: string
+        default: 'dist'
+      root_directory:
+        description: 'Root directory (if project in subfolder)'
+        required: false
+        type: string
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout external repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ inputs.branch }}
+
+      - name: Create workflow directory
+        run: mkdir -p .github/workflows
+
+      - name: Create deployment workflow
+        run: |
+          cat > .github/workflows/deploy-cloudflare.yml << 'EOF'
+          name: Deploy to Cloudflare
+
+          on:
+            push:
+              branches: [${{ inputs.branch }}]
+
+          jobs:
+            trigger-deploy:
+              runs-on: ubuntu-latest
+              steps:
+                - name: Trigger deployment in taruvi-platform
+                  uses: peter-evans/repository-dispatch@v3
+                  with:
+                    token: ${{ secrets.PLATFORM_DEPLOY_TOKEN }}
+                    repository: ${{ github.repository }}
+                    event-type: deploy-external-project
+                    client-payload: |
+                      {
+                        "project_name": "${{ inputs.project_name }}",
+                        "project_type": "${{ inputs.project_type }}",
+                        "environment": "production",
+                        "repository": "${{ inputs.repository }}",
+                        "branch": "${{ github.ref_name }}",
+                        "custom_domain": "${{ inputs.custom_domain }}",
+                        "build_directory": "${{ inputs.build_directory }}",
+                        "root_directory": "${{ inputs.root_directory }}"
+                      }
+          EOF
+
+      - name: Create PR
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'ci: add Cloudflare deployment workflow'
+          branch: setup-cloudflare-deploy
+          title: 'Setup Cloudflare CI/CD Pipeline'
+          body: |
+            ## 🚀 Cloudflare Deployment Setup
+
+            This PR adds automatic deployment to Cloudflare Pages/Workers.
+
+            ### Configuration:
+            - **Project**: ${{ inputs.project_name }}
+            - **Type**: ${{ inputs.project_type }}
+            - **Branch**: ${{ inputs.branch }}
+            - **Custom Domain**: ${{ inputs.custom_domain || 'None' }}
+            - **Build Directory**: ${{ inputs.build_directory }}
+
+            ### What happens after merge:
+            1. Push to `${{ inputs.branch }}` branch
+            2. Automatically deploys to Cloudflare
+            3. Updates custom domain or default Cloudflare URL
+
+            ### Required Secret:
+            Before merging, add this secret to the repository:
+            - `PLATFORM_DEPLOY_TOKEN` - GitHub PAT with `repo` and `workflow` scopes
+
+            [How to create PAT](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token)

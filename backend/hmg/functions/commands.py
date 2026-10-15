@@ -15,7 +15,7 @@ SERVICE_USER_ID = '4f7ff492-8af6-4059-ae61-ce13fe3d4b20'
 
 def command_secret_value(secret):
     value=secret.get("value") if isinstance(secret,dict) else secret
-    if isinstance(value,dict):value=value.get("api_key") or value.get("key")
+    if isinstance(value,dict):value=value.get("api_key") or value.get("key") or value.get("url") or value.get("endpoint") or value.get("value")
     if not isinstance(value,str) or not value.strip() or value=="[ENCRYPTED]":raise ValueError("Gemini key unavailable")
     return value.strip()
 
@@ -29,6 +29,18 @@ def verified_extraction_payload(payload,sdk_client):
     expected=hashlib.sha256(("v1:"+api_key+":"+json.dumps(clean,sort_keys=True,separators=(",", ":"))).encode("utf-8")).hexdigest()
     if proof!=expected:raise ValueError("Invalid extraction proof")
     next_payload=copy.deepcopy(payload);next_payload["draft"]=clean;next_payload["serverVerifiedExtraction"]=True
+    return next_payload
+
+def verified_visual_preview_payload(payload,sdk_client):
+    preview=payload.get("preview") if isinstance(payload,dict) else None
+    if not isinstance(preview,dict):return payload
+    proof=preview.get("visualPreviewProof")
+    if not isinstance(proof,str) or not re.fullmatch(r"[a-f0-9]{64}",proof):return payload
+    clean=copy.deepcopy(preview);clean.pop("visualPreviewProof",None)
+    signing_key=command_secret_value(sdk_client.secrets.get("HMG_DIFFUSERS_ENDPOINT"))
+    expected=hashlib.sha256(("v1:"+signing_key+":"+json.dumps(clean,sort_keys=True,separators=(",", ":"))).encode("utf-8")).hexdigest()
+    if proof!=expected:raise ValueError("Invalid visual preview proof")
+    next_payload=copy.deepcopy(payload);next_payload["preview"]=clean;next_payload["serverVerifiedVisualPreview"]=True
     return next_payload
 DEMO_TEAM = {'consultant':'f4e9385e-dbcf-45df-81c9-ff3510f7595d','operations':'5b031e5f-1e55-4a89-ba22-85f1b3cde90d','salesHead':'aee9e4b1-e1de-4086-8d26-b0434819c8af'}
 PRICING_COMMANDS = {'getQuote','listQuotes','listQuoteCandidates','createStudioQuoteDraft','createPlanQuoteDraft','createQuoteDraft','saveQuoteRevision','withdrawQuoteDraft','requestPriceApproval','reviewPriceApproval','createProposalSnapshot','previewDemoReset','resetDemoProject'}
@@ -324,6 +336,7 @@ def lead_replay_authorized(db, record, actor, manager):
 
 PLAN_BUCKET='hmg-project-plans'
 PLAN_MIME_TYPES={'application/pdf','image/png','image/jpeg','image/webp'}
+VISUAL_PREVIEW_MIME_TYPES={'image/png','image/jpeg','image/webp'}
 PLAN_ROOM_CATEGORIES={'hall','kitchen','bedroom','toilet','sit_out','pooja','stair','other'}
 PLAN_ROOM_CONFIDENCE={'high','medium','low'}
 PLAN_OPENING_TYPES={'door','window','ventilator','main_door','unknown'}
@@ -358,11 +371,35 @@ def reviewed_room(raw,default_height):
     if not isinstance(include_floor,bool):raise ValueError('Invalid floor inclusion')
     include_walls=raw.get('includeInteriorWalls',category in {'kitchen','toilet'})
     if not isinstance(include_walls,bool):raise ValueError('Invalid wall inclusion')
-    return {'id':rid,'name':name,'category':category,'lengthFt':length,'widthFt':width,'heightFt':height,'includeFloor':include_floor,'includeInteriorWalls':include_walls}
+    result={'id':rid,'name':name,'category':category,'lengthFt':length,'widthFt':width,'heightFt':height,'includeFloor':include_floor,'includeInteriorWalls':include_walls}
+    x=plan_coordinate(raw.get('xFt'),'x');z=plan_coordinate(raw.get('zFt'),'z')
+    if x is not None and z is not None:result.update({'xFt':x,'zFt':z})
+    return result
 
 def plan_dimension(value,name):
     if value is None or value=='':return None
     return plan_number(value,1,100,name)
+
+def plan_coordinate(value,name):
+    if value is None or value=='':return None
+    return plan_number(value,0,500,name)
+
+def plan_rect(raw,allow_missing_origin=False):
+    if not isinstance(raw,dict):return None
+    x=plan_coordinate(raw.get('xFt',0 if allow_missing_origin else None),'x')
+    z=plan_coordinate(raw.get('zFt',0 if allow_missing_origin else None),'z')
+    length=plan_dimension(raw.get('lengthFt'),'feature length')
+    width=plan_dimension(raw.get('widthFt'),'feature width')
+    if None in (x,z,length,width):return None
+    return {'xFt':x,'zFt':z,'lengthFt':length,'widthFt':width}
+
+def extracted_feature(raw,index=0):
+    if not isinstance(raw,dict):raise ValueError('Invalid extracted feature')
+    kind=raw.get('type','other')
+    if kind not in {'stair','duct','road','setback','balcony','sit_out','other'}:raise ValueError('Invalid feature type')
+    rect=plan_rect(raw)
+    if not rect:raise ValueError('Invalid feature rectangle')
+    return {'id':plan_upload_id(raw.get('id') or f'feature-{index+1}'),'label':text(raw.get('label') or f'Feature {index+1}',120),'type':kind,**rect,'notes':optional_text(raw.get('notes',''),500)}
 
 def extracted_room(raw):
     if not isinstance(raw,dict):raise ValueError('Invalid extracted room')
@@ -374,7 +411,10 @@ def extracted_room(raw):
     if not isinstance(include_floor,bool):raise ValueError('Invalid floor inclusion')
     include_walls=raw.get('includeInteriorWalls',category in {'kitchen','toilet'})
     if not isinstance(include_walls,bool):raise ValueError('Invalid wall inclusion')
-    return {'id':rid,'label':label,'category':category,'lengthFt':plan_dimension(raw.get('lengthFt'),'length'),'widthFt':plan_dimension(raw.get('widthFt'),'width'),'heightFt':plan_dimension(raw.get('heightFt'),'height'),'includeFloor':include_floor,'includeInteriorWalls':include_walls,'confidence':confidence,'notes':text_array(raw.get('notes',[]),10)}
+    result={'id':rid,'label':label,'category':category,'lengthFt':plan_dimension(raw.get('lengthFt'),'length'),'widthFt':plan_dimension(raw.get('widthFt'),'width'),'heightFt':plan_dimension(raw.get('heightFt'),'height'),'includeFloor':include_floor,'includeInteriorWalls':include_walls,'confidence':confidence,'notes':text_array(raw.get('notes',[]),10)}
+    x=plan_coordinate(raw.get('xFt'),'x');z=plan_coordinate(raw.get('zFt'),'z')
+    if x is not None and z is not None:result.update({'xFt':x,'zFt':z})
+    return result
 
 def extracted_opening(raw,index=0):
     if not isinstance(raw,dict):raise ValueError('Invalid extracted opening')
@@ -405,7 +445,39 @@ def plan_extraction_draft(raw,upload_id):
     if area is not None:area=plan_number(area,1,100000,'built-up area')
     source=raw.get('sourceUploadId',upload_id)
     if source!=upload_id:raise ValueError('Extraction upload mismatch')
-    return {'sourceUploadId':upload_id,'model':optional_text(raw.get('model',''),120),'generatedAt':optional_text(raw.get('generatedAt',''),40),'buildingFacing':facing,'builtUpAreaSqFt':area,'floorName':optional_text(raw.get('floorName','Ground Floor'),120) or 'Ground Floor','rooms':[extracted_room(room) for room in rooms_raw],'openings':[extracted_opening(opening,i) for i,opening in enumerate(openings_raw)],'warnings':text_array(raw.get('warnings',[]),20),'rawTextPreview':optional_text(raw.get('rawTextPreview',''),2000)}
+    features_raw=raw.get('features',[])
+    if not isinstance(features_raw,list) or len(features_raw)>40:raise ValueError('Extracted plan has too many features')
+    result={'sourceUploadId':upload_id,'model':optional_text(raw.get('model',''),120),'generatedAt':optional_text(raw.get('generatedAt',''),40),'buildingFacing':facing,'builtUpAreaSqFt':area,'floorName':optional_text(raw.get('floorName','Ground Floor'),120) or 'Ground Floor','rooms':[extracted_room(room) for room in rooms_raw],'openings':[extracted_opening(opening,i) for i,opening in enumerate(openings_raw)],'warnings':text_array(raw.get('warnings',[]),20),'rawTextPreview':optional_text(raw.get('rawTextPreview',''),2000)}
+    footprint=plan_rect({**(raw.get('footprint') or {}),'xFt':0,'zFt':0},True) if isinstance(raw.get('footprint'),dict) else None
+    if footprint:result['footprint']={'lengthFt':footprint['lengthFt'],'widthFt':footprint['widthFt']}
+    features=[extracted_feature(feature,i) for i,feature in enumerate(features_raw)]
+    if features:result['features']=features
+    return result
+
+def visual_preview_id(value):
+    if not isinstance(value,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,100}',value):raise ValueError('Invalid visual preview identifier')
+    return value
+
+def validate_visual_preview_storage_path(project_id,upload_id,preview_id,path,mime_type):
+    ext={'image/png':'png','image/jpeg':'jpg','image/webp':'webp'}.get(mime_type)
+    if not ext:raise ValueError('Unsupported visual preview type')
+    expected=f'projects/{project_id}/plans/{upload_id}/visual-previews/{preview_id}.{ext}'
+    if not isinstance(path,str) or path!=expected:raise ValueError('Invalid visual preview storage path')
+    return path
+
+def visual_preview(raw,project_id,upload_id):
+    if not isinstance(raw,dict):raise ValueError('Visual preview object required')
+    preview_id=visual_preview_id(raw.get('id') or raw.get('previewId'))
+    if raw.get('status')!='Ready':raise ValueError('Visual preview must be ready')
+    if raw.get('provider')!='diffusers':raise ValueError('Unsupported visual preview provider')
+    mime_type=raw.get('mimeType')
+    if mime_type not in VISUAL_PREVIEW_MIME_TYPES:raise ValueError('Unsupported visual preview type')
+    if raw.get('storageBucket')!=PLAN_BUCKET:raise ValueError('Invalid visual preview storage bucket')
+    storage_path=validate_visual_preview_storage_path(project_id,upload_id,preview_id,raw.get('storagePath'),mime_type)
+    width=raw.get('width');height=raw.get('height')
+    if isinstance(width,bool) or not isinstance(width,int) or width<128 or width>4096:raise ValueError('Invalid visual preview width')
+    if isinstance(height,bool) or not isinstance(height,int) or height<128 or height>4096:raise ValueError('Invalid visual preview height')
+    return {'id':preview_id,'status':'Ready','provider':'diffusers','model':optional_text(raw.get('model','diffusers'),120) or 'diffusers','createdAt':optional_text(raw.get('createdAt',''),40),'storageBucket':PLAN_BUCKET,'storagePath':storage_path,'mimeType':mime_type,'prompt':text(raw.get('prompt'),2000),'source':text(raw.get('source'),160),'width':width,'height':height,'warnings':text_array(raw.get('warnings',[]),20)}
 
 
 def plan_assignment(raw,texture_ids):
@@ -431,6 +503,33 @@ def reviewed_plan_assignments(raw,rooms,texture_ids):
 def assignment_for_surface(assignment,width,height):
     return {**copy.deepcopy(assignment),'widthM':width,'heightM':height,'groutMm':0,'dimensionsAssumed':True}
 
+STUDIO_OBJECT_FINISHES={'sofa-modern':'linen','armchair-modern':'olive','chair-dining':'light-oak','chair-office':'charcoal','coffee-table':'walnut','side-table':'light-oak','bedside-table':'walnut','desk-office':'light-oak','meeting-table':'walnut','bed-queen':'white','wardrobe-double':'light-oak','dresser-modern':'walnut','bookshelf-open':'light-oak','floor-lamp':'brass','table-lamp':'brass'}
+PLAN_ROOM_OBJECT_PRESETS={
+    'hall':[('sofa-modern',.50,.20,0),('coffee-table',.50,.50,0),('armchair-modern',.20,.68,90),('floor-lamp',.82,.22,0)],
+    'kitchen':[('meeting-table',.50,.48,0),('chair-dining',.35,.48,90),('chair-dining',.65,.48,270),('table-lamp',.50,.28,0)],
+    'bedroom':[('bed-queen',.50,.42,0),('wardrobe-double',.20,.82,90),('bedside-table',.28,.42,0),('table-lamp',.28,.34,0)],
+    'sit_out':[('chair-dining',.38,.50,0),('side-table',.60,.50,0),('floor-lamp',.78,.32,0)],
+    'pooja':[('side-table',.50,.50,0),('table-lamp',.50,.35,0)],
+    'other':[('side-table',.50,.50,0),('floor-lamp',.75,.28,0)],
+}
+
+def plan_room_objects(room,length,width):
+    placed=[];objects=[]
+    presets=PLAN_ROOM_OBJECT_PRESETS.get(room.get('category'),PLAN_ROOM_OBJECT_PRESETS['other'])
+    for index,(catalog_id,x_ratio,z_ratio,rotation) in enumerate(presets):
+        meta=STUDIO_OBJECT_CATALOG.get(catalog_id)
+        if not meta:continue
+        turned=rotation in [90,270]
+        item_width=meta[2] if turned else meta[1]
+        item_depth=meta[1] if turned else meta[2]
+        x=round(min(max(length*x_ratio,item_width/2+.08),length-item_width/2-.08),3)
+        z=round(min(max(width*z_ratio,item_depth/2+.08),width-item_depth/2-.08),3)
+        if x-item_width/2<0 or z-item_depth/2<0 or x+item_width/2>length or z+item_depth/2>width:continue
+        if any(abs(x-ox)<(item_width+ow)/2+.03 and abs(z-oz)<(item_depth+od)/2+.03 for ox,oz,ow,od in placed):continue
+        placed.append((x,z,item_width,item_depth))
+        objects.append({'id':('plan-object-'+room['id']+'-'+str(index+1))[:100],'catalogId':catalog_id,'kind':meta[0],'xM':x,'zM':z,'rotationDeg':rotation,'finish':STUDIO_OBJECT_FINISHES[catalog_id]})
+    return objects
+
 def plan_room_design(project_id,floor_name,room,index,assignments=None,design_id=None,texture_ids=None):
     length=round(room['lengthFt']*0.3048,4);width=round(room['widthFt']*0.3048,4);height=round(room['heightFt']*0.3048,4)
     rid=('plan-'+re.sub(r'[^a-zA-Z0-9_-]+','-',room['id']).strip('-')+'-'+str(index+1))[:80]
@@ -445,7 +544,7 @@ def plan_room_design(project_id,floor_name,room,index,assignments=None,design_id
     if wall_assignment and room.get('includeInteriorWalls'):
         for i,wall_id in enumerate(room_data['wallSideIds']):
             option_assignments[wall_id]=assignment_for_surface(wall_assignment,length if i%2==0 else width,height)
-    design={'schemaVersion':1,'id':design_id or str(uuid.uuid4()),'projectId':project_id,'name':text((floor_name+' - '+room['name'])[:120],120),'geometryRevision':1,'room':room_data,'activeOption':'A','options':{'A':{'assignments':option_assignments},'B':{'assignments':{}}},'camera':{'position':[round(length*1.3,4),6,round(width*1.5,4)],'target':[round(length/2,4),1,round(width/2,4)]},'objects':[]}
+    design={'schemaVersion':1,'id':design_id or str(uuid.uuid4()),'projectId':project_id,'name':text((floor_name+' - '+room['name'])[:120],120),'geometryRevision':1,'room':room_data,'activeOption':'A','options':{'A':{'assignments':option_assignments},'B':{'assignments':{}}},'camera':{'position':[round(length*1.3,4),6,round(width*1.5,4)],'target':[round(length/2,4),1,round(width/2,4)]},'objects':plan_room_objects(room,length,width)}
     return validate_studio(design,project_id,None,texture_ids)
 
 def blank(pid,name,owner,brief):
@@ -666,8 +765,8 @@ def plan_quote_draft_source_and_lines(project,upload_id,materials,now):
             if not asset_id:continue
             if asset_id not in materials or not materials[asset_id].get('surfaceEligible'):raise ValueError('A selected material is no longer eligible; review whole-plan assignments')
             group=groups.setdefault(asset_id,{'assetId':asset_id,'area':Decimal('0'),'surfaceCount':0})
-            group['area']+=Decimal(str(line['areaM2']))
-            group['surfaceCount']+=1
+            group['area']=group['area']+Decimal(str(line['areaM2']))
+            group['surfaceCount']=group['surfaceCount']+1
     if not groups:raise ValueError('Assign an approved stone to at least one whole-plan surface first')
     lines=[]
     for asset_id,group in sorted(groups.items(),key=lambda item:materials[item[0]]['title']):
@@ -879,7 +978,25 @@ def execute(params,user,db):
     elif cmd=='markPlanExtractionFailed':
         upload=plan_upload(s,plan_upload_id(p.get('uploadId')))
         if not upload:raise ValueError('Plan upload not found')
-        upload['status']='Failed';upload['updatedAt']=now;upload['error']={'code':'PLAN_EXTRACTION_FAILED','message':text(p.get('message'),500)}
+        upload['status']='Failed';upload['updatedAt']=now;upload['error']={'code':'PLAN_EXTRACTION_FAILED','message':text(p.get('message'),500),'stage':optional_text(p.get('stage',''),40),'detail':optional_text(p.get('detail',''),240)}
+    elif cmd=='startPlanVisualPreview':
+        upload=plan_upload(s,plan_upload_id(p.get('uploadId')))
+        if not upload:raise ValueError('Plan upload not found')
+        if not upload.get('reviewed'):raise ValueError('Review plan before generating visual preview')
+        upload['visualPreviewStatus']='Generating';upload['updatedAt']=now;upload.pop('visualPreviewError',None)
+        upload.setdefault('visualPreviews',[])
+    elif cmd=='savePlanVisualPreview':
+        upload=plan_upload(s,plan_upload_id(p.get('uploadId')))
+        if not upload:raise ValueError('Plan upload not found')
+        if p.get('serverVerifiedVisualPreview') is not True:raise ValueError('Server-verified Diffusers preview required')
+        value=visual_preview(p.get('preview'),s['id'],upload['id'])
+        previews=upload.setdefault('visualPreviews',[])
+        if any(x.get('id')==value['id'] for x in previews):raise ValueError('Visual preview already saved')
+        previews.append(value);upload['visualPreviewStatus']='Ready';upload['updatedAt']=now;upload.pop('visualPreviewError',None)
+    elif cmd=='markPlanVisualPreviewFailed':
+        upload=plan_upload(s,plan_upload_id(p.get('uploadId')))
+        if not upload:raise ValueError('Plan upload not found')
+        upload['visualPreviewStatus']='Failed';upload['updatedAt']=now;upload['visualPreviewError']={'code':'PLAN_VISUAL_PREVIEW_FAILED','message':text(p.get('message'),500),'stage':optional_text(p.get('stage',''),40),'detail':optional_text(p.get('detail',''),240)}
     elif cmd=='saveReviewedPlan':
         upload=plan_upload(s,plan_upload_id(p.get('uploadId')))
         if not upload:raise ValueError('Plan upload not found')
@@ -1240,6 +1357,8 @@ def native_main(params, user_data, sdk_client):
         if params['command']=='listGallery':return {'ok':True,'data':native_gallery(params.get('payload',{}))}
         if params['command']=='savePlanExtractionDraft':
             params=copy.deepcopy(params);params['payload']=verified_extraction_payload(params.get('payload',{}),sdk_client)
+        if params['command']=='savePlanVisualPreview':
+            params=copy.deepcopy(params);params['payload']=verified_visual_preview_payload(params.get('payload',{}),sdk_client)
         if params['command']=='getImageObject':return {'ok':True,'data':native_image_object(params.get('payload',{}),sdk_client.database)}
         return execute(params,user_data,sdk_client.database)
     except (ValueError,TypeError,KeyError) as error:

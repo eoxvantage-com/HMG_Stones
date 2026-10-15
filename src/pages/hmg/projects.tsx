@@ -880,7 +880,7 @@ export function ProjectPage({
               <Tab label={`Activity (${p.timeline.length})`} />
               <Tab label={`Plan to 3D (${p.planUploads?.length || 0})`} />
             </Tabs>
-            <Box sx={columnGrid}>
+            <Box sx={tab === 4 ? { display: "block" } : columnGrid}>
               <Stack spacing={3}>
                 {tab === 0 && (
                   <Panel
@@ -1253,6 +1253,7 @@ export function ProjectPage({
                   </Panel>
                 )}
               </Stack>
+              {tab !== 4 && (
               <Stack spacing={3}>
                 <AiFindingsPanel project={p} />
                 {context?.canPrice && (
@@ -1314,6 +1315,7 @@ export function ProjectPage({
                   Archive project
                 </Button>
               </Stack>
+              )}
             </Box>
           </>
         )}

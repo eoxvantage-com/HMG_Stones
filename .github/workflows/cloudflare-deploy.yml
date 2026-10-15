@@ -1,0 +1,385 @@
+name: Cloudflare Deploy
+
+run-name: |
+  ${{ github.event_name == 'repository_dispatch' && format('🤖 Auto-Deploy: {0}', github.event.client_payload.project_name) ||
+      github.event_name == 'workflow_dispatch' && format('👤 Manual Deploy: {0}', inputs.use_existing != 'No - Enter new config' && inputs.use_existing || inputs.project_name || 'new-project') ||
+      format('📦 Internal: {0}', github.ref_name) }}
+
+on:
+  push:
+    branches: [master, dev]
+    paths:
+      - '.cloudflare/projects/**'
+
+  repository_dispatch:
+    types: [deploy-external-project, deploy-cloudflare]
+
+  workflow_dispatch:
+    inputs:
+      use_existing:
+        description: 'Use existing config?'
+        required: true
+        type: choice
+        options:
+          - 'No - Enter new config'
+          - 'Yes - taruvi-desk'
+          - 'Yes - grainix'
+          - 'Yes - grainix-test'
+          - 'Yes - scopeengine-test'
+          - 'Yes - hubdriveonlinetest'
+          # Manually sync this list with projects.yml when adding new projects
+      project_name:
+        description: '⚠️ IGNORE if using existing config | Project name'
+        required: false
+        type: string
+      environment:
+        description: '⚠️ IGNORE if using existing config | Environment'
+        required: false
+        type: choice
+        options:
+          - production
+          - staging
+          - test
+      repository:
+        description: '⚠️ IGNORE if using existing config | Repository (org/repo)'
+        required: false
+        type: string
+      branch:
+        description: '⚠️ IGNORE if using existing config | Branch'
+        required: false
+        type: string
+        default: 'main'
+      custom_domain:
+        description: '⚠️ IGNORE if using existing config | Custom domain (configure manually in Cloudflare dashboard after deploy)'
+        required: false
+        type: string
+      build_directory:
+        description: '⚠️ IGNORE if using existing config | Build output directory'
+        required: false
+        type: string
+        default: 'build'
+      root_directory:
+        description: '⚠️ IGNORE if using existing config | Root directory'
+        required: false
+        type: string
+      infisical_env_slug:
+        description: '⚠️ IGNORE if using existing config | Infisical environment slug'
+        required: false
+        type: string
+      save_config:
+        description: 'Save this config for future use?'
+        required: false
+        type: boolean
+        default: true
+      auto_deploy:
+        description: 'Enable auto-deploy on push?'
+        required: false
+        type: choice
+        options:
+          - 'No - Manual deploy only'
+          - 'Yes - Direct commit to repo'
+          - 'Yes - Create PR for review'
+          - 'Remove - Delete auto-deploy workflow'
+        default: 'No - Manual deploy only'
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      projects: ${{ steps.detect.outputs.projects }}
+      project_type: ${{ steps.type.outputs.project_type }}
+      project_name: ${{ steps.resolve.outputs.project_name }}
+      repository: ${{ steps.resolve.outputs.repository }}
+      branch: ${{ steps.resolve.outputs.branch }}
+      root_directory: ${{ steps.resolve.outputs.root_directory }}
+      build_directory: ${{ steps.resolve.outputs.build_directory }}
+      custom_domain: ${{ steps.resolve.outputs.custom_domain }}
+      environment: ${{ steps.resolve.outputs.environment }}
+      infisical_project_slug: ${{ steps.resolve.outputs.infisical_project_slug }}
+      infisical_env_slug: ${{ steps.resolve.outputs.infisical_env_slug }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Install yq once for all steps
+      - name: Install yq
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch'
+        run: sudo apt-get install -y yq
+
+      # Resolve config: existing, new, or webhook
+      - name: Resolve configuration
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch'
+        id: resolve
+        run: |
+
+          # Webhook: load from payload
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            PROJECT="${{ github.event.client_payload.project_name }}"
+            echo "project_name=$PROJECT" >> $GITHUB_OUTPUT
+            echo "repository=$(yq -r ".external_projects[\"$PROJECT\"].repository" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+            echo "branch=$(yq -r ".external_projects[\"$PROJECT\"].branch" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+            echo "root_directory=$(yq -r ".external_projects[\"$PROJECT\"].root_directory" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+            echo "build_directory=$(yq -r ".external_projects[\"$PROJECT\"].build_directory" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+            echo "custom_domain=$(yq -r ".external_projects[\"$PROJECT\"].custom_domain" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+            echo "environment=$(yq -r ".external_projects[\"$PROJECT\"].environment" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+            echo "project_type=$(yq -r ".external_projects[\"$PROJECT\"].project_type" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+            echo "infisical_project_slug=$(yq -r ".external_projects[\"$PROJECT\"].infisical_project_slug" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+            echo "infisical_env_slug=$(yq -r ".external_projects[\"$PROJECT\"].infisical_env_slug" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+          # Manual: existing config
+          elif [[ "${{ inputs.use_existing }}" != "No - Enter new config" ]]; then
+            PROJECT=$(echo "${{ inputs.use_existing }}" | sed 's/Yes - //')
+            echo "DEBUG: Loading config for $PROJECT"
+            echo "project_name=$PROJECT" >> $GITHUB_OUTPUT
+            REPO=$(yq -r ".external_projects[\"$PROJECT\"].repository" .cloudflare/projects.yml)
+            echo "DEBUG: repository=$REPO"
+            echo "repository=$REPO" >> $GITHUB_OUTPUT
+            echo "branch=$(yq -r ".external_projects[\"$PROJECT\"].branch" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+            echo "root_directory=$(yq -r ".external_projects[\"$PROJECT\"].root_directory" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+            echo "build_directory=$(yq -r ".external_projects[\"$PROJECT\"].build_directory" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+            echo "custom_domain=$(yq -r ".external_projects[\"$PROJECT\"].custom_domain" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+            echo "environment=$(yq -r ".external_projects[\"$PROJECT\"].environment" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+            echo "infisical_project_slug=$(yq -r ".external_projects[\"$PROJECT\"].infisical_project_slug" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+            echo "infisical_env_slug=$(yq -r ".external_projects[\"$PROJECT\"].infisical_env_slug" .cloudflare/projects.yml)" >> $GITHUB_OUTPUT
+          # Manual: new config
+          else
+            echo "project_name=${{ inputs.project_name }}" >> $GITHUB_OUTPUT
+            echo "repository=${{ inputs.repository }}" >> $GITHUB_OUTPUT
+            echo "branch=${{ inputs.branch }}" >> $GITHUB_OUTPUT
+            echo "root_directory=${{ inputs.root_directory }}" >> $GITHUB_OUTPUT
+            echo "build_directory=${{ inputs.build_directory }}" >> $GITHUB_OUTPUT
+            echo "custom_domain=${{ inputs.custom_domain }}" >> $GITHUB_OUTPUT
+            echo "environment=${{ inputs.environment }}" >> $GITHUB_OUTPUT
+            echo "infisical_project_slug=${{ vars.INFISICAL_PROJECT_SLUG }}" >> $GITHUB_OUTPUT
+            echo "infisical_env_slug=${{ inputs.infisical_env_slug }}" >> $GITHUB_OUTPUT
+          fi
+
+      # Save config if requested
+      - name: Save configuration
+        if: github.event_name == 'workflow_dispatch' && inputs.save_config && inputs.use_existing == 'No - Enter new config'
+        run: |
+          PROJECT="${{ inputs.project_name }}"
+
+          yq -y --in-place ".external_projects[\"$PROJECT\"].repository = \"${{ inputs.repository }}\"" .cloudflare/projects.yml
+          yq -y --in-place ".external_projects[\"$PROJECT\"].branch = \"${{ inputs.branch }}\"" .cloudflare/projects.yml
+          yq -y --in-place ".external_projects[\"$PROJECT\"].root_directory = \"${{ inputs.root_directory }}\"" .cloudflare/projects.yml
+          yq -y --in-place ".external_projects[\"$PROJECT\"].build_directory = \"${{ inputs.build_directory }}\"" .cloudflare/projects.yml
+          yq -y --in-place ".external_projects[\"$PROJECT\"].custom_domain = \"${{ inputs.custom_domain }}\"" .cloudflare/projects.yml
+          yq -y --in-place ".external_projects[\"$PROJECT\"].project_type = \"pages\"" .cloudflare/projects.yml
+          yq -y --in-place ".external_projects[\"$PROJECT\"].environment = \"${{ inputs.environment }}\"" .cloudflare/projects.yml
+          yq -y --in-place ".external_projects[\"$PROJECT\"].infisical_project_slug = \"${{ vars.INFISICAL_PROJECT_SLUG }}\"" .cloudflare/projects.yml
+          yq -y --in-place ".external_projects[\"$PROJECT\"].infisical_env_slug = \"${{ inputs.infisical_env_slug }}\"" .cloudflare/projects.yml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .cloudflare/projects.yml
+          git diff --staged --quiet || git commit -m "chore: add $PROJECT to cloudflare projects config"
+          git push
+
+      # Setup auto-deploy in external repo
+      - name: Setup auto-deploy workflow
+        if: github.event_name == 'workflow_dispatch' && inputs.auto_deploy != 'No - Manual deploy only' && steps.resolve.outputs.repository != ''
+        run: |
+          PROJECT="${{ steps.resolve.outputs.project_name }}"
+          REPO="${{ steps.resolve.outputs.repository }}"
+          BRANCH="${{ steps.resolve.outputs.branch }}"
+
+          # Clone external repo
+          git clone https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/$REPO.git /tmp/external
+          cd /tmp/external
+          git checkout $BRANCH
+
+          # Remove workflow if requested
+          if [[ "${{ inputs.auto_deploy }}" == "Remove - Delete auto-deploy workflow" ]]; then
+            if [ -f ".github/workflows/cloudflare-deploy.yml" ]; then
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git rm .github/workflows/cloudflare-deploy.yml
+              git commit -m "chore: remove cloudflare auto-deploy workflow"
+              git push origin $BRANCH
+              echo "✅ Auto-deploy workflow removed from $REPO"
+            else
+              echo "⚠️  No auto-deploy workflow found in $REPO"
+            fi
+            exit 0
+          fi
+
+          # Create workflow file
+          mkdir -p .github/workflows
+          cat > .github/workflows/cloudflare-deploy.yml << EOF
+          name: Deploy to Cloudflare
+
+          on:
+            push:
+              branches: [$BRANCH]
+
+          jobs:
+            trigger:
+              runs-on: ubuntu-latest
+              steps:
+                - uses: peter-evans/repository-dispatch@v3
+                  with:
+                    token: \${{ secrets.PLATFORM_DEPLOY_TOKEN }}
+                    repository: Taruvi-ai/taruvi-platform
+                    event-type: deploy-cloudflare
+                    client-payload: '{"project_name": "$PROJECT"}'
+          EOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/cloudflare-deploy.yml
+
+          # Commit or PR based on choice
+          if [[ "${{ inputs.auto_deploy }}" == "Yes - Direct commit to repo" ]]; then
+            git commit -m "chore: add cloudflare auto-deploy workflow"
+            git push origin $BRANCH
+            echo "✅ Auto-deploy workflow committed to $REPO"
+          else
+            # Create PR
+            git checkout -b cloudflare-auto-deploy-$PROJECT
+            git commit -m "chore: add cloudflare auto-deploy workflow"
+            git push origin cloudflare-auto-deploy-$PROJECT
+
+            gh pr create \
+              --repo "$REPO" \
+              --title "Enable Cloudflare auto-deploy for $PROJECT" \
+              --body "Auto-deploy workflow for Cloudflare Pages. Merge to enable push-to-deploy." \
+              --base "$BRANCH" \
+              --head "cloudflare-auto-deploy-$PROJECT"
+
+            echo "✅ Auto-deploy PR created in $REPO"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # AUTO-DEPLOY: Detect changed projects
+      - name: Detect changed projects
+        if: github.event_name == 'push'
+        id: detect
+        run: |
+          CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }})
+
+          PROJECTS='[]'
+          if [ -d ".cloudflare/projects" ]; then
+            for dir in .cloudflare/projects/*/; do
+              [ -d "$dir" ] || continue
+              proj=$(basename "$dir")
+              if echo "$CHANGED" | grep -q "^.cloudflare/projects/$proj/"; then
+                PROJECTS=$(echo $PROJECTS | jq --arg p "$proj" '. += [$p]')
+              fi
+            done
+          fi
+
+          echo "projects=$PROJECTS" >> $GITHUB_OUTPUT
+
+      # MANUAL-DEPLOY: Validate and detect type
+      - name: Checkout target repository
+        if: github.event_name == 'workflow_dispatch' && steps.resolve.outputs.repository != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.resolve.outputs.repository }}
+          ref: ${{ steps.resolve.outputs.branch }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Detect project type
+        if: github.event_name == 'workflow_dispatch'
+        id: type
+        run: |
+          if [ -n "${{ steps.resolve.outputs.root_directory }}" ]; then
+            PROJECT_DIR="${{ steps.resolve.outputs.root_directory }}"
+          else
+            PROJECT_DIR="."
+          fi
+
+          if [ ! -d "$PROJECT_DIR" ]; then
+            echo "❌ Project directory not found: $PROJECT_DIR"
+            exit 1
+          fi
+
+          if [ -f "$PROJECT_DIR/wrangler.toml" ] && grep -q 'type.*=.*"service-worker"' "$PROJECT_DIR/wrangler.toml" 2>/dev/null; then
+            echo "project_type=workers" >> $GITHUB_OUTPUT
+          else
+            echo "project_type=pages" >> $GITHUB_OUTPUT
+          fi
+
+  deploy-auto:
+    needs: prepare
+    if: github.event_name == 'push' && fromJson(needs.prepare.outputs.projects)[0] != null
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        project: ${{ fromJson(needs.prepare.outputs.projects) }}
+      max-parallel: 3
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine environment
+        id: env
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/master" ]; then
+            echo "environment=production" >> $GITHUB_OUTPUT
+          else
+            echo "environment=staging" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: '.cloudflare/projects/${{ matrix.project }}/package-lock.json'
+
+      - name: Install dependencies
+        run: |
+          cd .cloudflare/projects/${{ matrix.project }}
+          npm ci
+
+      - name: Build
+        run: |
+          cd .cloudflare/projects/${{ matrix.project }}
+          npm run build
+        env:
+          NODE_ENV: production
+          NODE_OPTIONS: --max-old-space-size=4096
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: ${{ matrix.project }}
+          directory: .cloudflare/projects/${{ matrix.project }}/build
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          wranglerVersion: '3'
+
+  deploy-manual:
+    needs: prepare
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch'
+    permissions:
+      contents: read
+      deployments: write
+    name: ${{ needs.prepare.outputs.project_name }} @ ${{ needs.prepare.outputs.branch }}
+    uses: ./.github/workflows/cloudflare-core.yml
+    with:
+      project_name: ${{ needs.prepare.outputs.root_directory || '.' }}
+      cloudflare_project_name: ${{ needs.prepare.outputs.project_name }}
+      project_type: ${{ github.event_name == 'repository_dispatch' && needs.prepare.outputs.project_type || needs.prepare.outputs.project_type }}
+      environment: ${{ needs.prepare.outputs.environment }}
+      custom_domain: ${{ needs.prepare.outputs.custom_domain }}
+      repository: ${{ needs.prepare.outputs.repository }}
+      branch: ${{ needs.prepare.outputs.branch }}
+      build_directory: ${{ needs.prepare.outputs.build_directory }}
+      infisical_project_slug: ${{ needs.prepare.outputs.infisical_project_slug }}
+      infisical_env_slug: ${{ needs.prepare.outputs.infisical_env_slug }}
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_CLIENT_ID }}
+      INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}

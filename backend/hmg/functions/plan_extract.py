@@ -19,10 +19,77 @@ ROOM_CATEGORIES = {"hall", "kitchen", "bedroom", "toilet", "sit_out", "pooja", "
 OPENING_TYPES = {"door", "window", "ventilator", "main_door", "unknown"}
 CONFIDENCES = {"high", "medium", "low"}
 FACINGS = {"north", "south", "east", "west", "unknown"}
-TOP_LEVEL_KEYS = {"buildingFacing", "builtUpAreaSqFt", "floorName", "rooms", "openings", "warnings", "rawTextPreview"}
-ROOM_KEYS = {"id", "label", "category", "lengthFt", "widthFt", "heightFt", "includeFloor", "includeInteriorWalls", "confidence", "notes"}
-OPENING_KEYS = {"label", "type", "notes"}
+TOP_LEVEL_KEYS = {"buildingFacing", "builtUpAreaSqFt", "floorName", "rooms", "openings", "warnings", "rawTextPreview", "footprint", "features"}
+ROOM_KEYS = {"id", "label", "category", "lengthFt", "widthFt", "heightFt", "includeFloor", "includeInteriorWalls", "confidence", "notes", "xFt", "zFt", "rect"}
+OPENING_KEYS = {"label", "type", "notes", "roomId", "wall", "widthFt", "heightFt"}
+FEATURE_TYPES = {"stair", "duct", "road", "setback", "balcony", "sit_out", "other"}
+WALLS = {"north", "east", "south", "west", "unknown"}
 FRACTIONS = {"½": 0.5, "¼": 0.25, "¾": 0.75, "⅛": 0.125, "⅜": 0.375, "⅝": 0.625, "⅞": 0.875}
+FT_PER_M = 3.280839895
+EXTRACTION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "buildingFacing": {"type": "string", "enum": ["north", "south", "east", "west", "unknown"]},
+        "builtUpAreaSqFt": {"type": "number"},
+        "floorName": {"type": "string"},
+        "footprint": {
+            "type": "object",
+            "properties": {"lengthFt": {"type": "number"}, "widthFt": {"type": "number"}},
+        },
+        "features": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"},
+                    "type": {"type": "string", "enum": ["stair", "duct", "road", "setback", "balcony", "sit_out", "other"]},
+                    "xFt": {"type": "number"}, "zFt": {"type": "number"},
+                    "lengthFt": {"type": "number"}, "widthFt": {"type": "number"},
+                    "notes": {"type": "string"},
+                },
+            },
+        },
+        "rooms": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "label": {"type": "string"},
+                    "category": {"type": "string", "enum": sorted(ROOM_CATEGORIES)},
+                    "lengthFt": {"type": "number", "nullable": True},
+                    "widthFt": {"type": "number", "nullable": True},
+                    "heightFt": {"type": "number", "nullable": True},
+                    "dimensions": {"type": "string"},
+                    "includeFloor": {"type": "boolean"},
+                    "includeInteriorWalls": {"type": "boolean"},
+                    "confidence": {"type": "string", "enum": sorted(CONFIDENCES)},
+                    "notes": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["label", "category", "confidence"],
+            },
+        },
+        "openings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"},
+                    "type": {"type": "string", "enum": sorted(OPENING_TYPES)},
+                    "roomId": {"type": "string"},
+                    "wall": {"type": "string"},
+                    "widthFt": {"type": "number", "nullable": True},
+                    "heightFt": {"type": "number", "nullable": True},
+                    "notes": {"type": "string"},
+                },
+                "required": ["label", "type"],
+            },
+        },
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "rawTextPreview": {"type": "string"},
+    },
+    "required": ["floorName", "rooms", "openings", "warnings"],
+}
 
 
 def safe_error(code, message, stage=None, detail=None):
@@ -73,6 +140,21 @@ def numeric_text(value):
             return float(match.group(0))
     return value
 
+def scalar(value, *keys):
+    current = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def first_value(*values):
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
 
 def feet_inches_text(value):
     if not isinstance(value, str):
@@ -91,13 +173,59 @@ def feet_inches_text(value):
     if feet_match:
         feet_value = float(feet_match.group(1))
         inches_value = 0
-        if inch_match and inch_match.group(1):
-            inches_value = float(inch_match.group(1))
+        ascii_fraction = re.search(r"(?:'|feet|ft)\s*[-\s]*(\d+)\s+(\d+)\s*/\s*(\d+)", normalized, re.IGNORECASE)
+        if ascii_fraction:
+            inches_value = float(ascii_fraction.group(1)) + (float(ascii_fraction.group(2)) / float(ascii_fraction.group(3)))
+            fraction = 0
+        elif inch_match and inch_match.group(1):
+            inches_token = inch_match.group(1)
+            if inches_token.isdigit() and len(inches_token) >= 3:
+                suffix = inches_token[-2:]
+                prefix = inches_token[:-2]
+                compact_fraction = {"12": 0.5, "14": 0.25, "34": 0.75}.get(suffix)
+                if compact_fraction is not None and prefix:
+                    inches_value = float(prefix) + compact_fraction
+                else:
+                    inches_value = float(inches_token)
+            else:
+                inches_value = float(inches_token)
         return feet_value + ((inches_value + fraction) / 12)
     plain = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(?:ft|feet)?\s*", normalized, re.IGNORECASE)
     if plain:
         return float(plain.group(1))
     return None
+
+def metric_text(value):
+    if not isinstance(value, str):
+        return None
+    source = value.strip().lower()
+    if not source:
+        return None
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(?:m|metre|meter|metres|meters)\b", source)
+    if match:
+        return float(match.group(1)) * FT_PER_M
+    cm_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:cm|centimetre|centimeter|centimetres|centimeters)\b", source)
+    if cm_match:
+        return float(cm_match.group(1)) / 100 * FT_PER_M
+    return None
+
+
+def unit_value(value):
+    if isinstance(value, dict):
+        number = first_value(value.get("value"), value.get("amount"), value.get("number"))
+        unit = str(value.get("unit") or value.get("uom") or "ft").strip().lower()
+        if isinstance(number, str):
+            parsed = feet_inches_text(number) or metric_text(number) or numeric_text(number)
+            number = parsed
+        if isinstance(number, (int, float)) and not isinstance(number, bool):
+            if unit in {"m", "meter", "meters", "metre", "metres"}:
+                return float(number) * FT_PER_M
+            if unit in {"cm", "centimeter", "centimeters", "centimetre", "centimetres"}:
+                return float(number) / 100 * FT_PER_M
+            return float(number)
+    if isinstance(value, str):
+        return feet_inches_text(value) or metric_text(value) or numeric_text(value)
+    return value
 
 
 def dimensions_pair(value):
@@ -106,13 +234,13 @@ def dimensions_pair(value):
     parts = re.split(r"\s*(?:x|×|by)\s*", value, maxsplit=1, flags=re.IGNORECASE)
     if len(parts) != 2:
         return None, None
-    return feet_inches_text(parts[0]), feet_inches_text(parts[1])
+    return unit_value(parts[0]), unit_value(parts[1])
 
 
 def dimension(value):
     if value in (None, ""):
         return None
-    parsed = feet_inches_text(value)
+    parsed = unit_value(value)
     if parsed is not None:
         value = parsed
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -121,6 +249,41 @@ def dimension(value):
     if value < 1 or value > 100:
         raise ValueError("Dimension outside supported range")
     return int(value) if value.is_integer() else round(value, 4)
+
+
+def plan_coordinate(value):
+    if value in (None, ""):
+        return None
+    parsed = unit_value(value)
+    if parsed is not None:
+        value = parsed
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Invalid plan coordinate")
+    value = float(value)
+    if value < 0 or value > 500:
+        raise ValueError("Plan coordinate outside supported range")
+    return int(value) if value.is_integer() else round(value, 4)
+
+
+def rect_value(raw):
+    if not isinstance(raw, dict):
+        return None
+    length_value = first_value(raw.get("lengthFt"), raw.get("length"))
+    width_value = first_value(raw.get("widthFt"), raw.get("width"), raw.get("depth"))
+    rect = {
+        "xFt": plan_coordinate(first_value(raw.get("xFt"), raw.get("x"), raw.get("leftFt"))),
+        "zFt": plan_coordinate(first_value(raw.get("zFt"), raw.get("yFt"), raw.get("y"), raw.get("topFt"))),
+        "lengthFt": dimension(length_value),
+        "widthFt": dimension(width_value),
+    }
+    if any(value is None for value in rect.values()):
+        return None
+    return rect
+
+
+def feature_list(raw):
+    value = first_value(raw.get("features"), raw.get("planFeatures"), raw.get("nonRoomFeatures"), raw.get("annotations"))
+    return value if isinstance(value, list) else []
 
 
 def height(value):
@@ -132,6 +295,36 @@ def height(value):
     if value < 6 or value > 20:
         raise ValueError("Height outside supported range")
     return int(value) if value.is_integer() else round(value, 4)
+
+
+def confidence_value(value):
+    if isinstance(value, dict):
+        value = first_value(value.get("level"), value.get("value"), value.get("confidence"))
+    return normalize_confidence(value)
+
+
+def room_list(raw):
+    rooms = raw.get("rooms")
+    if isinstance(rooms, list) and rooms:
+        return rooms
+    floors = raw.get("floors") or raw.get("levels") or raw.get("storeys")
+    if isinstance(floors, list):
+        result = []
+        for floor in floors:
+            if isinstance(floor, dict) and isinstance(floor.get("rooms"), list):
+                for room in floor["rooms"]:
+                    if isinstance(room, dict):
+                        result.append({**room, "_floorName": first_value(floor.get("name"), floor.get("label"), floor.get("floorName"))})
+        return result
+    return rooms
+
+
+def opening_list(raw):
+    for key in ("openings", "doorsWindows", "doorsAndWindows", "apertures"):
+        value = raw.get(key)
+        if isinstance(value, list):
+            return value
+    return raw.get("openings") or []
 
 
 def optional_area(value):
@@ -162,7 +355,7 @@ def normalize_extraction_json(raw, upload_id, model, now):
     if not isinstance(raw, dict):
         raise ValueError("Extraction JSON must be an object")
     floor_name = text(raw.get("floorName") or "Uploaded plan", 120, required=True)
-    rooms_raw = raw.get("rooms")
+    rooms_raw = room_list(raw)
     if not isinstance(rooms_raw, list) or not rooms_raw or len(rooms_raw) > 30:
         raise ValueError("Invalid room list")
     rooms = []
@@ -170,7 +363,7 @@ def normalize_extraction_json(raw, upload_id, model, now):
     for index, room in enumerate(rooms_raw, start=1):
         if not isinstance(room, dict):
             raise ValueError("Invalid room")
-        label = text(room.get("label") or f"Room {index}", 120, required=True)
+        label = text(first_value(room.get("label"), room.get("name"), room.get("roomName"), room.get("title")) or f"Room {index}", 120, required=True)
         room_id = slug(room.get("id") or label, f"room-{index}")
         original = room_id
         counter = 2
@@ -178,24 +371,36 @@ def normalize_extraction_json(raw, upload_id, model, now):
             room_id = f"{original[:70]}-{counter}"
             counter += 1
         seen_ids.add(room_id)
-        room_category = normalize_category(room.get("category"))
+        room_category = normalize_category(first_value(room.get("category"), room.get("roomType"), room.get("type"), room.get("usage")))
         inferred_length = None
         inferred_width = None
-        if room.get("lengthFt") in (None, "") or room.get("widthFt") in (None, ""):
-            inferred_length, inferred_width = dimensions_pair(room.get("dimensions"))
-        rooms.append({
+        dimensions_text = first_value(room.get("dimensions"), room.get("dimensionText"), room.get("size"), room.get("roomSize"))
+        if first_value(room.get("lengthFt"), room.get("length"), room.get("lengthValue")) in (None, "") or first_value(room.get("widthFt"), room.get("width"), room.get("widthValue")) in (None, ""):
+            inferred_length, inferred_width = dimensions_pair(dimensions_text)
+        length_value = first_value(room.get("lengthFt"), room.get("length"), room.get("lengthValue"), scalar(room, "dimensions", "length"), inferred_length)
+        width_value = first_value(room.get("widthFt"), room.get("width"), room.get("widthValue"), scalar(room, "dimensions", "width"), inferred_width)
+        normalized_room = {
             "id": room_id,
             "label": label,
             "category": room_category,
-            "lengthFt": dimension(room.get("lengthFt") if room.get("lengthFt") not in (None, "") else inferred_length),
-            "widthFt": dimension(room.get("widthFt") if room.get("widthFt") not in (None, "") else inferred_width),
-            "heightFt": height(room.get("heightFt")),
+            "lengthFt": dimension(length_value),
+            "widthFt": dimension(width_value),
+            "heightFt": height(first_value(room.get("heightFt"), room.get("height"), room.get("heightValue"))),
             "includeFloor": room.get("includeFloor") if isinstance(room.get("includeFloor"), bool) else True,
             "includeInteriorWalls": room.get("includeInteriorWalls") if isinstance(room.get("includeInteriorWalls"), bool) else room_category in {"kitchen", "toilet"},
-            "confidence": normalize_confidence(room.get("confidence")),
+            "confidence": confidence_value(room.get("confidence")),
             "notes": bounded_list(room.get("notes"), 8, 240),
-        })
-    openings_raw = raw.get("openings") or []
+        }
+        room_rect = rect_value(room.get("rect") or room.get("bounds") or room.get("position"))
+        x_value = plan_coordinate(first_value(room.get("xFt"), room.get("x"), scalar(room, "rect", "xFt"), scalar(room, "position", "xFt")))
+        z_value = plan_coordinate(first_value(room.get("zFt"), room.get("yFt"), room.get("y"), scalar(room, "rect", "zFt"), scalar(room, "position", "zFt")))
+        if room_rect:
+            normalized_room.update(room_rect)
+        elif x_value is not None and z_value is not None:
+            normalized_room["xFt"] = x_value
+            normalized_room["zFt"] = z_value
+        rooms.append(normalized_room)
+    openings_raw = opening_list(raw)
     if not isinstance(openings_raw, list) or len(openings_raw) > 40:
         raise ValueError("Invalid openings")
     openings = []
@@ -206,12 +411,25 @@ def normalize_extraction_json(raw, upload_id, model, now):
             continue
         if not isinstance(opening, dict):
             raise ValueError("Invalid opening")
-        opening_type = str(opening.get("type") or "unknown").strip().lower()
-        openings.append({
-            "label": text(opening.get("label") or "Opening", 120, required=True),
+        opening_type = str(first_value(opening.get("type"), opening.get("openingType"), opening.get("kind")) or "unknown").strip().lower()
+        normalized_opening = {
+            "label": text(first_value(opening.get("label"), opening.get("name"), opening.get("id")) or "Opening", 120, required=True),
             "type": opening_type if opening_type in OPENING_TYPES else "unknown",
             "notes": text(opening.get("notes"), 240) if opening.get("notes") is not None else "",
-        })
+        }
+        room_ref = text(first_value(opening.get("roomId"), opening.get("room"), opening.get("roomName")), 100)
+        if room_ref:
+            normalized_opening["roomId"] = slug(room_ref, room_ref)
+        wall = str(opening.get("wall") or "unknown").strip().lower()
+        if wall in WALLS:
+            normalized_opening["wall"] = wall
+        width = dimension(first_value(opening.get("widthFt"), opening.get("width")))
+        height_value = height(first_value(opening.get("heightFt"), opening.get("height")))
+        if width is not None:
+            normalized_opening["widthFt"] = width
+        if height_value is not None:
+            normalized_opening["heightFt"] = height_value
+        openings.append(normalized_opening)
     facing = str(raw.get("buildingFacing") or "unknown").strip().lower()
     result = {
         "sourceUploadId": text(upload_id, 100, required=True),
@@ -227,6 +445,26 @@ def normalize_extraction_json(raw, upload_id, model, now):
     area = optional_area(raw.get("builtUpAreaSqFt"))
     if area is not None:
         result["builtUpAreaSqFt"] = area
+    footprint = rect_value({**(raw.get("footprint") or {}), "xFt": 0, "zFt": 0}) if isinstance(raw.get("footprint"), dict) else None
+    if footprint:
+        result["footprint"] = {"lengthFt": footprint["lengthFt"], "widthFt": footprint["widthFt"]}
+    features = []
+    for index, feature in enumerate(feature_list(raw)[:30], start=1):
+        if not isinstance(feature, dict):
+            continue
+        feature_type = str(first_value(feature.get("type"), feature.get("featureType"), feature.get("kind")) or "other").strip().lower().replace(" ", "_")
+        feature_rect = rect_value(feature.get("rect") or feature.get("bounds") or feature)
+        if not feature_rect:
+            continue
+        features.append({
+            "id": slug(feature.get("id") or feature.get("label") or f"feature-{index}", f"feature-{index}"),
+            "label": text(first_value(feature.get("label"), feature.get("name")) or f"Feature {index}", 120, required=True),
+            "type": feature_type if feature_type in FEATURE_TYPES else "other",
+            **feature_rect,
+            "notes": text(feature.get("notes"), 240) if feature.get("notes") is not None else "",
+        })
+    if features:
+        result["features"] = features
     return result
 
 
@@ -243,14 +481,113 @@ def validate_plan_mime(mime_type):
 
 def build_gemini_prompt():
     return (
-        "Extract room names, visible dimensions, building facing, openings, and warnings from this HMG Stones "
-        "customer plan. Return strict JSON only with keys: buildingFacing, builtUpAreaSqFt, floorName, rooms, "
-        "openings, warnings, rawTextPreview. Preserve original room labels where readable. Parse feet and inches "
-        "into decimal feet. Use null for missing dimensions. Never estimate hidden wall thickness, adjacency, or "
-        "unreadable dimensions. Put uncertainty in warnings and per-room notes. rawTextPreview must be a short safe "
-        "excerpt, not full document text. Room category must be one of hall, kitchen, bedroom, toilet, sit_out, "
-        "pooja, stair, other. Confidence must be high, medium, or low."
+        "Extract a structured floor-plan dimension draft from any architect, builder, CAD, municipal, real-estate, "
+        "or contractor template. Return strict JSON only matching the configured schema. Use only dimensions and "
+        "labels that are visible in the uploaded PDF/image; Never estimate hidden wall thickness, adjacency, scale, "
+        "or unreadable dimensions. Return every readable enclosed room/space with its original label, category, "
+        "lengthFt and widthFt converted to decimal feet. When visible, include footprint length/width, room xFt/zFt top-left coordinates, and stair/duct/road/setback feature rectangles in feet from a common plan origin; otherwise omit coordinates. Use null for missing dimensions. Convert metric dimensions "
+        "to feet. If a dimension is written as L x W, keep that order. Include doors, windows, ventilators and main "
+        "doors when labels are visible. Put uncertainty in warnings and per-room notes. rawTextPreview must be a "
+        "short safe excerpt, not full document text. Room category must be one of hall, kitchen, bedroom, toilet, "
+        "sit_out, pooja, stair, other. Confidence must be high, medium, or low."
     )
+
+def pdf_literal(value):
+    value = value.replace(r"\(", "(").replace(r"\)", ")").replace(r"\\", "\\")
+    value = re.sub(r"\\([nrtbf])", " ", value)
+    value = re.sub(r"\\[0-7]{1,3}", " ", value)
+    return value
+
+
+def fallback_pdf_text(file_bytes):
+    # Dependency-free fallback for uncompressed/plain PDF text. Gemini is the primary extractor.
+    raw = bytes(file_bytes).decode("latin-1", "ignore")
+    literals = [pdf_literal(item) for item in re.findall(r"\((?:\.|[^\)])*\)", raw)]
+    text_value = " ".join(x[1:-1] if x.startswith("(") and x.endswith(")") else x for x in literals)
+    return text_value or raw[:50000]
+
+
+ROOM_LABELS = [
+    ("kitchen / dining", "kitchen", "Kitchen / Dining"),
+    ("master bed room", "bedroom", "Master Bed Room"),
+    ("master bed", "bedroom", "Master Bed"),
+    ("bed room", "bedroom", "Bed Room"),
+    ("living", "hall", "Living"),
+    ("sit out", "sit_out", "Sit Out"),
+    ("pooja", "pooja", "Pooja"),
+    ("kitchen", "kitchen", "Kitchen"),
+    ("toilet", "toilet", "Toilet"),
+    ("hall", "hall", "Hall"),
+]
+
+
+def room_label_from_segment(segment, index):
+    clean = re.sub(r"www\.indianplans\.in|\b(?:PROPOSED|TYPICAL|GROUND|FIRST|FLOOR|PLAN)\b", " ", segment, flags=re.IGNORECASE)
+    clean = re.sub(r"\b(?:ROAD|WIDE|FACING|BUILDING|BUILT|AREA|SFT|NORTH|SOUTH|EAST|WEST|UP|DUCT|GATE|MD|D2|D|W3|W2|W|V|O|N)\b", " ", clean, flags=re.IGNORECASE)
+    lowered = clean.lower()
+    found = None
+    for needle, category, label in ROOM_LABELS:
+        pos = lowered.rfind(needle)
+        if pos >= 0 and (found is None or pos > found[0]):
+            found = (pos, category, label)
+    return (found[2], found[1]) if found else (f"Room {index}", "other")
+
+
+def parse_floorplan_text(source_text, upload_id, now):
+    source = text(source_text, 12000)
+    if not source:
+        raise ValueError("No readable PDF text")
+    compact = re.sub(r"\s+", " ", source)
+    facing_match = re.search(r"\b(NORTH|SOUTH|EAST|WEST)\s+FACING\s*BUILDING", compact, re.IGNORECASE)
+    area_match = re.search(r"BUILT\s*UP\s*AREA\s*:\s*([0-9,]+(?:\.\d+)?)\s*SFT", compact, re.IGNORECASE)
+    dim_pattern = re.compile(r"(\d+'\s*-\s*\d{1,4}(?:[¼½¾])?\"?)\s*(?:x|×)\s*(\d+'\s*-\s*\d{1,4}(?:[¼½¾])?\"?)", re.IGNORECASE)
+    rooms = []
+    seen = {}
+    previous_end = 0
+    for match in dim_pattern.finditer(compact):
+        label, category = room_label_from_segment(compact[previous_end:match.start()], len(rooms) + 1)
+        previous_end = match.end()
+        length = dimension(match.group(1))
+        width = dimension(match.group(2))
+        if length is None or width is None:
+            continue
+        base_id = slug(label, f"room-{len(rooms)+1}")
+        seen[base_id] = seen.get(base_id, 0) + 1
+        room_id = base_id if seen[base_id] == 1 else f"{base_id}-{seen[base_id]}"
+        rooms.append({
+            "id": room_id,
+            "label": label,
+            "category": category,
+            "lengthFt": length,
+            "widthFt": width,
+            "heightFt": None,
+            "includeFloor": True,
+            "includeInteriorWalls": category in {"kitchen", "toilet"},
+            "confidence": "medium",
+            "notes": ["Extracted from embedded PDF text; verify against the uploaded plan."],
+        })
+        if len(rooms) >= 20:
+            break
+    if not rooms:
+        raise ValueError("No room dimensions found in PDF text")
+    openings = []
+    for marker, opening_type in [("MD", "main_door"), ("W3", "window"), ("W2", "window"), ("W", "window"), ("V", "ventilator"), ("D2", "door"), ("D", "door")]:
+        if re.search(rf"\b{re.escape(marker)}\b", compact):
+            openings.append({"label": marker, "type": opening_type, "notes": "Detected from embedded PDF labels."})
+    result = {
+        "sourceUploadId": text(upload_id, 100, required=True),
+        "model": "Local PDF text fallback",
+        "generatedAt": text(now, 40, required=True),
+        "buildingFacing": facing_match.group(1).lower() if facing_match else "unknown",
+        "floorName": "Uploaded plan",
+        "rooms": rooms,
+        "openings": openings[:20],
+        "warnings": ["Local PDF text fallback used; confirm every dimension before generating 3D or quoting."],
+        "rawTextPreview": text(compact, 500),
+    }
+    if area_match:
+        result["builtUpAreaSqFt"] = optional_area(area_match.group(1))
+    return result
 
 
 def extract_json_text(response_json):
@@ -274,7 +611,7 @@ def call_gemini(api_key, file_bytes, mime_type, prompt, model=GEMINI_MODEL):
         raise ValueError("Plan file exceeds extraction limit")
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}, {"inline_data": {"mime_type": mime_type, "data": base64.b64encode(bytes(file_bytes)).decode("ascii")}}]}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096, "responseMimeType": "application/json"},
+        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 4096, "responseMimeType": "application/json", "responseSchema": EXTRACTION_RESPONSE_SCHEMA},
     }
     response = requests.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
@@ -404,9 +741,17 @@ def main(params, user_data, sdk_client):
         stage = "storage"
         file_bytes = download(sdk_client.storage, upload["bucket"], upload["path"], upload["mimeType"])
         stage = "provider"
-        raw = call_gemini(api_key, file_bytes, upload["mimeType"], build_gemini_prompt(), GEMINI_MODEL)
-        stage = "normalize"
-        draft = normalize_extraction_json(raw, upload_id, GEMINI_MODEL, datetime.now(timezone.utc).isoformat())
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            raw = call_gemini(api_key, file_bytes, upload["mimeType"], build_gemini_prompt(), GEMINI_MODEL)
+            stage = "normalize"
+            draft = normalize_extraction_json(raw, upload_id, GEMINI_MODEL, now)
+        except Exception as provider_error:
+            if upload["mimeType"] != "application/pdf":
+                raise
+            stage = "fallback"
+            draft = parse_floorplan_text(fallback_pdf_text(file_bytes), upload_id, now)
+            draft["warnings"] = draft.get("warnings", []) + [text(f"Gemini extraction fallback reason: {provider_error}", 240)]
         draft["extractionProof"] = extraction_proof(api_key, draft)
         return {"ok": True, "data": draft}
     except Exception as exc:

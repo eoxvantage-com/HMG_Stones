@@ -1,0 +1,236 @@
+name: Cloudflare Scaffold - Create Project
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_name:
+        description: 'Project name (e.g., my-app, customer-portal)'
+        required: true
+        type: string
+      project_type:
+        description: 'Type of project'
+        required: true
+        type: choice
+        options:
+          - pages
+          - workers
+      framework:
+        description: 'Framework (Pages only)'
+        required: false
+        type: choice
+        options:
+          - react
+          - vue
+          - docusaurus
+          - html
+        default: react
+      language:
+        description: 'Language (Workers only)'
+        required: false
+        type: choice
+        options:
+          - typescript
+          - javascript
+        default: typescript
+
+jobs:
+  scaffold:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate project name
+        run: |
+          if [ -d ".cloudflare/projects/${{ inputs.project_name }}" ]; then
+            echo "❌ Project already exists: ${{ inputs.project_name }}"
+            exit 1
+          fi
+          echo "✅ Project name available: ${{ inputs.project_name }}"
+
+      - name: Create project directory
+        run: |
+          mkdir -p .cloudflare/projects/${{ inputs.project_name }}/src
+
+      - name: Create wrangler.toml
+        run: |
+          cat > .cloudflare/projects/${{ inputs.project_name }}/wrangler.toml << 'EOF'
+          name = "${{ inputs.project_name }}"
+          type = "${{ inputs.project_type == 'pages' && 'javascript' || 'service-worker' }}"
+          main = "src/index.ts"
+          compatibility_date = "2024-01-01"
+
+          [env.production]
+          name = "${{ inputs.project_name }}"
+
+          [env.staging]
+          name = "${{ inputs.project_name }}-staging"
+          EOF
+
+      - name: Create package.json for Pages
+        if: inputs.project_type == 'pages'
+        run: |
+          if [ "${{ inputs.framework }}" = "react" ]; then
+            cat > .cloudflare/projects/${{ inputs.project_name }}/package.json << 'EOF'
+          {
+            "name": "${{ inputs.project_name }}",
+            "version": "1.0.0",
+            "type": "module",
+            "scripts": {
+              "dev": "vite",
+              "build": "vite build",
+              "preview": "vite preview"
+            },
+            "dependencies": {
+              "react": "^18.2.0",
+              "react-dom": "^18.2.0"
+            },
+            "devDependencies": {
+              "@vitejs/plugin-react": "^4.2.0",
+              "vite": "^5.0.0"
+            }
+          }
+          EOF
+          elif [ "${{ inputs.framework }}" = "html" ]; then
+            cat > .cloudflare/projects/${{ inputs.project_name }}/package.json << 'EOF'
+          {
+            "name": "${{ inputs.project_name }}",
+            "version": "1.0.0",
+            "scripts": {
+              "build": "mkdir -p build && cp -r *.html *.css *.js build/ 2>/dev/null || cp index.html build/"
+            }
+          }
+          EOF
+          else
+            cat > .cloudflare/projects/${{ inputs.project_name }}/package.json << 'EOF'
+          {
+            "name": "${{ inputs.project_name }}",
+            "version": "1.0.0",
+            "type": "module",
+            "scripts": {
+              "dev": "vite",
+              "build": "vite build"
+            },
+            "devDependencies": {
+              "vite": "^5.0.0"
+            }
+          }
+          EOF
+          fi
+
+      - name: Create package.json for Workers
+        if: inputs.project_type == 'workers'
+        run: |
+          cat > .cloudflare/projects/${{ inputs.project_name }}/package.json << 'EOF'
+          {
+            "name": "${{ inputs.project_name }}",
+            "version": "1.0.0",
+            "type": "module",
+            "scripts": {
+              "dev": "wrangler dev",
+              "build": "echo 'No build needed for workers'",
+              "deploy": "wrangler deploy"
+            },
+            "devDependencies": {
+              "wrangler": "^3.0.0",
+              "typescript": "^5.0.0",
+              "@cloudflare/workers-types": "^4.0.0"
+            }
+          }
+          EOF
+
+      - name: Create tsconfig.json
+        run: |
+          cat > .cloudflare/projects/${{ inputs.project_name }}/tsconfig.json << 'EOF'
+          {
+            "compilerOptions": {
+              "target": "ES2020",
+              "module": "ESNext",
+              "lib": ["ES2020"],
+              "outDir": "./dist",
+              "strict": true,
+              "moduleResolution": "node"
+            },
+            "include": ["src/**/*"]
+          }
+          EOF
+
+      - name: Create Pages starter code
+        if: inputs.project_type == 'pages'
+        run: |
+          cat > .cloudflare/projects/${{ inputs.project_name }}/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>${{ inputs.project_name }}</title>
+            <style>
+              body { font-family: sans-serif; padding: 40px; }
+              h1 { color: #f6821f; }
+            </style>
+          </head>
+          <body>
+            <h1>🚀 Welcome to Cloudflare Pages</h1>
+            <p>Project: ${{ inputs.project_name }}</p>
+            <p>Framework: ${{ inputs.framework }}</p>
+          </body>
+          </html>
+          EOF
+
+      - name: Create Workers starter code
+        if: inputs.project_type == 'workers'
+        run: |
+          if [ "${{ inputs.language }}" = "typescript" ]; then
+            cat > .cloudflare/projects/${{ inputs.project_name }}/src/index.ts << 'EOF'
+            export default {
+              async fetch(request: Request): Promise<Response> {
+                return new Response('Hello from ${{ inputs.project_name }}!', {
+                  headers: { 'content-type': 'text/plain' }
+                });
+              }
+            };
+            EOF
+          else
+            cat > .cloudflare/projects/${{ inputs.project_name }}/src/index.js << 'EOF'
+            export default {
+              async fetch(request) {
+                return new Response('Hello from ${{ inputs.project_name }}!', {
+                  headers: { 'content-type': 'text/plain' }
+                });
+              }
+            };
+            EOF
+          fi
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b scaffold/${{ inputs.project_name }}
+          git add .cloudflare/projects/${{ inputs.project_name }}
+          git commit -m "scaffold: add ${{ inputs.project_name }} (${{ inputs.project_type }}, ${{ inputs.framework || inputs.language }})"
+          git push origin scaffold/${{ inputs.project_name }}
+
+      - name: Create pull request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Scaffold: Add ${{ inputs.project_name }}',
+              head: 'scaffold/${{ inputs.project_name }}',
+              base: 'main',
+              body: `## New Project: ${{ inputs.project_name }}\n\n**Type:** ${{ inputs.project_type }}\n**Framework/Language:** ${{ inputs.framework || inputs.language }}\n\nReview and merge to create the project and trigger auto-deployment to staging.`
+            });
+
+      - name: Done
+        run: |
+          echo "✅ Project scaffolding complete!"
+          echo "📦 Project: ${{ inputs.project_name }}"
+          echo "📁 Location: .cloudflare/projects/${{ inputs.project_name }}/"
+          echo "👀 Check the PR: https://github.com/${{ github.repository }}/pulls"

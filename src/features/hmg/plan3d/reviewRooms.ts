@@ -21,6 +21,8 @@ export function draftToReviewRoom(room: HmgPlanExtractionRoom): ReviewRoomDraft 
     heightFt: room.heightFt ?? 10,
     includeFloor: room.includeFloor,
     includeInteriorWalls: room.includeInteriorWalls,
+    xFt: room.xFt,
+    zFt: room.zFt,
   };
 }
 

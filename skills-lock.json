@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "taruvi-app-developer": {
+      "source": "Taruvi-ai/taruvi-skills",
+      "sourceType": "github",
+      "skillPath": "skills/taruvi-app-developer/SKILL.md",
+      "computedHash": "8f5fbc9116cbf8819c7a93a4b88f00c0894ad562c807968387bf3b64db304105"
+    },
+    "taruvi-refine-providers": {
+      "source": "Taruvi-ai/taruvi-skills",
+      "sourceType": "github",
+      "skillPath": "skills/taruvi-refine-providers/SKILL.md",
+      "computedHash": "0389466dc62b9365ff42ef0e678e790f0472b980c0cf46242d0b4931930b6575"
+    }
+  }
+}

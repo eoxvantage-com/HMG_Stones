@@ -1,0 +1,10 @@
+import{call,decode}from './mcp.mjs';
+import{readFileSync,writeFileSync}from'node:fs';
+const policy={name:'hmg_revisions',policy_type:'resource',entity_type:'datatable',version:'default',rules:[{actions:['read','create'],roles:['Super Admin','HMG Administrator'],effect:'EFFECT_ALLOW',name:'hmg_staff_append_only'},{actions:['update','delete'],roles:['*'],effect:'EFFECT_DENY',name:'hmg_immutable'}]};
+writeFileSync('backend/hmg/policy-preview.json',JSON.stringify(policy,null,2));
+console.log('Policy',JSON.stringify(decode(await call('manage_policies',{action:'create_update',policy_data:policy}))));
+writeFileSync('backend/hmg/policies-final.json',JSON.stringify(decode(await call('manage_policies',{action:'get'})),null,2));
+const code=readFileSync('backend/hmg/functions/commands.py','utf8').replace(/^\uFEFF/,'');
+const r=decode(await call('manage_function',{action:'create_update',function_slug:'hmg-workflow',name:'hmg-workflow',execution_mode:'app',is_public:false,code}));
+console.log('Deploy',JSON.stringify({success:r.success,slug:r.data?.slug,version:r.data?.version,error:r.error}));
+console.log('Context',JSON.stringify(decode(await call('execute_function',{function_slug:'hmg-workflow',params:{command:'context'}}))));

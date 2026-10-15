@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link as RouterLink, useNavigate, useSearchParams } from "react-router";
 import { useWarnAboutChange } from "@refinedev/core";
 import {
@@ -8,7 +8,6 @@ import {
   Chip,
   MenuItem,
   Stack,
-  TablePagination,
   TextField,
   Typography,
   Tabs,
@@ -58,6 +57,9 @@ import {
   History,
 } from "./history";
 import { PageContainer } from "../../../components";
+import { createFullHomeLayout } from "../plan3d/fullHomeLayout";
+import { FullHomePlanViewer } from "../plan3d/FullHomePlanViewer";
+import { homeAssignments } from "../plan3d/homeAssignments";
 import { useProjectCommand, useWorkflow } from "../api";
 import type { HmgList, HmgProject } from "../types";
 import {
@@ -100,7 +102,7 @@ export function StoneStudio() {
   const projects = useWorkflow<HmgList<HmgProject>>("listProjects", undefined, {
     search,
     page,
-    pageSize: 10,
+    pageSize: 50,
   });
   const project = useWorkflow<HmgProject>(
     workspace?.canPrice ? "getSalesProject" : "getProject",
@@ -153,14 +155,13 @@ export function StoneStudio() {
             ))}
           </TextField>
         </Stack>
-        <TablePagination
-          component="div"
-          count={projects.data?.total || 0}
-          page={page - 1}
-          rowsPerPage={10}
-          rowsPerPageOptions={[10]}
-          onPageChange={(_, v) => setPage(v + 1)}
-        />
+        {(projects.data?.total || 0) > 50 && (
+          <Stack direction="row" justifyContent="flex-end" gap={1} alignItems="center">
+            <Typography variant="body2" color="text.secondary">Showing {(projects.data?.data || []).length} of {projects.data?.total || 0} projects</Typography>
+            <Button disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>Previous</Button>
+            <Button disabled={page * 50 >= (projects.data?.total || 0)} onClick={() => setPage((value) => value + 1)}>Next</Button>
+          </Stack>
+        )}
         {projects.error && <LoadError retry={() => projects.refetch()} />}
         {!projectId ? (
           projects.loading ? (
@@ -278,7 +279,7 @@ function StudioEditor({
     [saved, setSaved] = useState(""),
     [savedRevision, setSavedRevision] = useState<number>();
   const [designRevisionChanged, setDesignRevisionChanged] = useState(false);
-  const [view, setView] = useState<"2d" | "3d">("2d"),
+  const [view, setView] = useState<"2d" | "3d" | "home">("2d"),
     [selected, setSelected] = useState<string>(),
     [status, setStatus] = useState("Loading planner"),
     [resetKey, setResetKey] = useState(0);
@@ -299,6 +300,27 @@ function StudioEditor({
   const [preparePending, setPreparePending] = useState(false);
   const [savePending, setSavePending] = useState(false);
   const busy = command.busy || savePending || preparePending;
+  const wholeHomeUpload = useMemo(() => {
+    const uploads = [...(project.planUploads || [])].reverse().filter(upload=>upload.reviewed?.rooms?.length);
+    return uploads.find(upload=>upload.generatedDesignIds.includes(design.id)) || uploads[0];
+  }, [project.planUploads, design.id]);
+  const wholeHomeAssignments = useMemo(() => homeAssignments(wholeHomeUpload, project.stoneStudioDesigns || [], design), [wholeHomeUpload, project.stoneStudioDesigns, design]);
+  const activePlanRoomId = wholeHomeUpload?.reviewed?.rooms[wholeHomeUpload.generatedDesignIds.indexOf(design.id)]?.id;
+  const wholeHomeLayout = useMemo(() => {
+    const reviewed = wholeHomeUpload?.reviewed;
+    if (!reviewed?.rooms?.length) return null;
+    // Studio edits any structural surface; reviewed inclusion flags govern plan selection, not room visibility.
+    return createFullHomeLayout(reviewed.rooms.map(room=>({...room,includeFloor:true,includeInteriorWalls:true})), {
+      builtUpAreaSqFt: wholeHomeUpload?.extraction?.builtUpAreaSqFt,
+      buildingFacing: wholeHomeUpload?.extraction?.buildingFacing,
+      floorName: wholeHomeUpload?.extraction?.floorName,
+      footprint: wholeHomeUpload?.extraction?.footprint,
+      features: wholeHomeUpload?.extraction?.features || [],
+      roomRects: Object.fromEntries((reviewed.rooms || [])
+        .filter((room) => typeof room.xFt === "number" && typeof room.zFt === "number")
+        .map((room) => [room.id, { xFt: room.xFt as number, zFt: room.zFt as number, lengthFt: room.lengthFt, widthFt: room.widthFt }])),
+    });
+  }, [wholeHomeUpload]);
   const designSummaries = (project.studioQuoteSummaries || []).filter(q => q.designId === design.id);
   const latestSummaries = [...new Map(designSummaries.map(q => [q.option, q])).values()];
   const historicalSummaries = designSummaries.filter(q => !latestSummaries.includes(q));
@@ -453,6 +475,7 @@ function StudioEditor({
       loaded.current = design.id;
       onDesignId(design.id);
       setError("");
+      return result;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Design not saved");
     } finally {
@@ -1324,6 +1347,13 @@ function StudioEditor({
           3D View
         </Button>
         <Button
+          variant={view === "home" ? "contained" : "outlined"}
+          disabled={!wholeHomeLayout}
+          onClick={() => setView("home")}
+        >
+          Whole home
+        </Button>
+        <Button
           disabled={
             readOnly || busy || dimensionsDirty || !design.name.trim()
           }
@@ -1532,25 +1562,58 @@ function StudioEditor({
           </Accordion>
           <Box
             sx={{
-              height: fullscreen
+              height: view === "home" ? "auto" : fullscreen
                 ? "calc(100vh - 245px)"
                 : { xs: 460, md: "min(74vh,850px)" },
               minWidth: 0,
             }}
           >
-            <BlueprintViewport
-              document={design}
-              view={view}
-              selectedSurfaceId={selected}
-              onSelectSurface={(id) => setSelected(id || undefined)}
-              onRoomObjectSelect={setSelectedRoomObjectId}
-              onRoomObjectMove={moveItemFromViewport}
-              onCameraChange={(camera) =>
-                setHistory((h) => ({ ...h, present: { ...h.present, camera } }))
-              }
-              onStatus={setStatus}
-              resetViewKey={resetKey}
-            />
+            {view === "home" && wholeHomeLayout ? (
+              <FullHomePlanViewer layout={wholeHomeLayout} assignments={wholeHomeAssignments} openings={wholeHomeUpload?.extraction?.openings || []}
+                activeRoomId={activePlanRoomId}
+                onEditRoom={(roomId, surface = 'floor') => {
+                  if (busy) return;
+                  const index = wholeHomeUpload?.reviewed?.rooms.findIndex(room=>room.id===roomId) ?? -1;
+                  const id = wholeHomeUpload?.generatedDesignIds[index];
+                  const entry = project.stoneStudioDesigns?.find(item=>item.design.id===id);
+                  if (!entry) {setError('Generate and save this room from Plan to 3D before editing its stones.');return;}
+                  const select = (room:StudioDesign['room']) => setSelected(surface === 'floor' ? `${room.id}:floor` : room.wallSideIds[['north','east','south','west'].indexOf(surface)]);
+                  if (id === design.id) {select(design.room);return;}
+                  if (dimensionsDirty) {setError('Apply or cancel the current dimension edits before switching rooms.');return;}
+                  const open = (source = project) => {
+                    const target=source.stoneStudioDesigns?.find(item=>item.design.id===id);
+                    if (!target) throw new Error('The selected room is no longer available.');
+                    restore(target.design,target.revision,source.version);
+                    select(target.design.room);
+                    setChosenReference(undefined);
+                    setMaterialTab(0);
+                  };
+                  if (dirty) setDialog({
+                    title:'Save changes and switch rooms?',
+                    description:'Save your current room before switching. Its stone selections will remain visible in the whole-home design.',
+                    label:'Save and switch',
+                    onConfirm:async () => {
+                      const result=await save();
+                      if (!result) throw new Error('The current room was not saved. Your edits are retained; resolve the save error before switching.');
+                      open(result);
+                    },
+                  }); else open();
+                }} />
+            ) : (
+              <BlueprintViewport
+                document={design}
+                view={view === "home" ? "3d" : view}
+                selectedSurfaceId={selected}
+                onSelectSurface={(id) => setSelected(id || undefined)}
+                onRoomObjectSelect={setSelectedRoomObjectId}
+                onRoomObjectMove={moveItemFromViewport}
+                onCameraChange={(camera) =>
+                  setHistory((h) => ({ ...h, present: { ...h.present, camera } }))
+                }
+                onStatus={setStatus}
+                resetViewKey={resetKey}
+              />
+            )}
           </Box>
           <Stack direction="row" flexWrap="wrap" gap={1} mt={1}>
             <Button onClick={() => setResetKey((v) => v + 1)}>
@@ -1563,7 +1626,7 @@ function StudioEditor({
               Materials
             </Button>
             <Typography variant="body2" role="status">
-              {status}
+              {view === "home" ? "Whole-home schematic preview. Select a room design for detailed surface editing." : status}
             </Typography>
           </Stack>
           {surface && (
